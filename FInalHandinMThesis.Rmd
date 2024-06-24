@@ -1,0 +1,2258 @@
+---
+title: "FinalHandinMThesis"
+author: "Jos Prinsen"
+date: "2024-06-05"
+output: html_document
+---
+
+#To Do
+Make sure to tell in the method section that the ERD data was log transformed for the models.
+Double check whether tests that use MFDFA really need Wilcoxon. Maybe they dont, since they are normally distributed
+Make an appendix of the distributions of ERD, MFDFA's
+Make an appendix of the full LMM information (like the residuals for example)
+Overlapping markers in singularity spectrum and Hurst spectrum
+Make sure the words don't go off the side of the page.
+
+
+
+#Importing Packages and loading data
+
+
+##Setting up R initial packages
+```{r results="hide", include = TRUE, message = FALSE, Echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Install necessary packages if you haven't already
+library(reticulate) #(Ushey K, Allaire J, Tang Y 2023)
+require(nonlinearTseries) #(Garcia C. 2022)
+require(tseriesChaos) #(Antonio, Narzo FD. 2019)
+library(ggplot2) #(H. Wickham. 2016)
+require(pracma) #(Borchers H. 2022)
+if (!requireNamespace("fractalRegression", quietly = TRUE)) install.packages("fractalRegression")
+require(fractalRegression) # (Likens A, Wiltshire T 2023)
+
+set.seed(34534534)
+library(dplyr)
+library(tidyr)
+library(lme4) 
+library(lmerTest)
+library(emmeans)
+
+#For LMM's
+library(effectsize)
+library(easystats)
+library(performance)
+library(broom.mixed)
+library(purrr)
+
+library(rstatix)
+library(rcompanion)
+
+
+
+```
+##Set path and import python packages
+```{python echo=T, include = FALSE, message = FALSE, Echo = FALSE}
+import scipy.io as sio
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import nolds
+from scipy.signal import butter, filtfilt
+import os
+```
+
+#Load Data
+```{r}
+#This assumes you have already all the steps to get the data in the right format, and done the computation of ERD's and MFDFA values. If you do not have the data yet, please follow the steps below
+
+
+ERD_data <- read.csv("E:\\MonsterDataset\\REBOOTPreprocessedData\\BetterValues\\ERD_data.csv")
+
+#Loads in the average powers into the variable power_list
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\AveragePowers.RData")
+
+ERD_data$Power <- power_list
+
+#Load the MFDFA data
+MFDFA_data <- read.csv("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\mf_dfa_widths.csv")
+MFDFA_data_rest <- read.csv("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\mf_dfa_widths_rest.csv")
+ERD_data$MFDFA_Widths <- MFDFA_data[[1]]
+ERD_data$MFDFA_Widths_rest <- MFDFA_data_rest[[1]]
+ERD_data$MFDFA_Widths_diff <- (MFDFA_data[[1]] - MFDFA_data_rest[[1]])
+
+
+#Load in the aggregated MFDFA data
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Hqholder0.Rdata")
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\qholder0.Rdata")
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Hqholder1.Rdata")
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\qholder1.Rdata")
+
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\hholder0.Rdata")
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Dholder0.Rdata")
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\hholder1.Rdata")
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Dholder1.Rdata")
+
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\RHqholder0.Rdata")
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Rqholder0.Rdata")
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\RHqholder1.Rdata")
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Rqholder1.Rdata")
+
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Rhholder0.Rdata")
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\RDholder0.Rdata")
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Rhholder1.Rdata")
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\RDholder1.Rdata")
+
+
+```
+
+#Computation of descriptors of Motor Imagery
+
+##Calculate ERD/ERS
+```{python}
+
+
+Basepath = "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\"
+os.chdir(Basepath)
+
+# butterwordth bandpass filter
+def bandpass_filter(data, lowcut, highcut, fs, order=5):
+  nyq = 0.5 * fs
+  low = lowcut / nyq
+  high = highcut / nyq
+  b, a = butter(order, [low, high], btype='band')
+  y = filtfilt(b, a, data, axis=1)
+  return y
+  
+def center_around_zero(data):
+  # Center the data around zero
+  mean_value = np.mean(data)
+  centered_data = data - mean_value
+  return centered_data  
+
+
+
+def get_power_and_DFA(MIData, RestData, fs):
+  
+  #Extract raw data for MFDFA
+  MIData_filtered = bandpass_filter(MIData, 1, 120, fs)
+  RestData_filtered = bandpass_filter(RestData, 1, 120, fs)
+  
+  raw_MIData_filtered_C3 = MIData_filtered[25, :]
+  raw_MIData_filtered_C4 = MIData_filtered[29, :]
+  raw_RestData_filtered_C3 = RestData_filtered[25, :]
+  raw_RestData_filtered_C4 = RestData_filtered[29, :]
+  
+  
+  #Extract power for ERD/mu-band suppression
+  
+  
+  #Extract power
+  Power_MI_C3 = MIData_filtered[25, :] * MIData_filtered[25, :]
+  Power_MI_C4 = MIData_filtered[29, :] * MIData_filtered[29, :]
+  
+  Power_Rest_C3 = RestData_filtered[25, :] * RestData_filtered[25, :]
+  Power_Rest_C4 = RestData_filtered[29, :] * RestData_filtered[29, :]
+
+  # Calculate baselines of C3 and C4
+  Baseline_C3 = np.mean(Power_Rest_C3)
+  Baseline_C4 = np.mean(Power_Rest_C4)
+  
+  # Baseline the data to center around 0 and calculate ERD within mu-band
+  #Following pfurtsheller 1999 ERD% = (A - R)/ R * 100
+  ERD_C3 = (Power_MI_C3 - Baseline_C3) / Baseline_C3 * 100 
+  ERD_C4 = (Power_MI_C4 - Baseline_C4) / Baseline_C4 * 100
+  
+  # Get the average mu suppression 
+  MuSup_C3 = np.mean(ERD_C3)
+  MuSup_C4 = np.mean(ERD_C4)
+  
+  # Calculate DFA
+  #DFA_MI_C3 = nolds.dfa(ERD_C3)
+  #DFA_MI_C4 = nolds.dfa(ERD_C4)
+
+  return MuSup_C3, MuSup_C4, Power_Rest_C3, Power_Rest_C4, Power_MI_C3, Power_MI_C4, raw_MIData_filtered_C3,raw_MIData_filtered_C4,raw_RestData_filtered_C3,raw_RestData_filtered_C4
+
+
+#Set headers for dataframe
+headers = ["Subject", "Session", "Channel", "Trial", "ERD","OnTask", "targetnumber", "triallength", "targethitnumber" ,"resultind","result", "forcedresult", "artifact"]
+Faults = []
+#open('MuBand_C3_data.csv', 'w') as file_c3, \
+#open('MuBand_C4_data.csv', 'w') as file_c4,\
+#open('Power_C3_data.csv' , 'w') as file_power_c3,\
+#open('Power_C4_data.csv' , 'w') as file_power_c4,\
+#open('Power_Rest_C3_data.csv' ,'w') as file_power_rest_c3,\
+#open('Power_Rest_C4_data.csv' , 'w') as file_power_rest_c4,\
+# Open CSV's files for writing
+#This allows for line by line read/writing, which is necessary to not encounter ram issues
+#It's not the most ideal approach, and could be improved to be far more (time) efficient.
+with open('ERD_data.csv', 'w') as file, \
+   open('Raw_C3_data.csv' , 'w') as file_raw_c3,\
+   open('Raw_C4_data.csv' , 'w') as file_raw_c4,\
+   open('Raw_Rest_C3_data.csv' ,'w') as file_raw_rest_c3,\
+   open('Raw_Rest_C4_data.csv' , 'w') as file_raw_rest_c4:
+     
+    
+  #Add headers to general dataframe
+  file.write(','.join(headers) + '\n')
+
+  for Subject in range(1, 63):  # Loop over subjects
+    try:
+      for Session in range(1, 12):  # Loop over sessions
+      
+        #Set path to current subject/session combination, and load this
+        path = r"D:\MonsterDataset\13123148\S{}_Session_{}.mat".format(str(Subject), str(Session))
+        da = sio.loadmat(path)
+        
+        #Separate EEG data from Meta data
+        data = da["BCI"]["data"][0][0][0]
+        MetaData = da["BCI"]["TrialData"][0][0][0]
+        
+        #Loop over trials (and create a separate iterator that ignores the up and down MI trials)
+        trial_num = 0
+        for trial in range(data.shape[0]):
+          trial_num += 1
+          #Frist 2000 samples are Rest, 2000-4000 is Presentation, 4000 - onwards are the MI samples
+          RestData = data[trial][:, 0:2000]  # Rest period
+          MIData = data[trial][:, 4000:]  # MI period
+          
+          #Only does the analysis on trials that are left/right
+          if MetaData[trial][3][0][0] == 1 or MetaData[trial][3][0][0] == 2:
+            
+            #Calculate ERD/S, Raw magnitude in Rest, Raw magnitude in MI
+            MuSup_C3, MuSup_C4, Power_Rest_C3, Power_Rest_C4, Power_MI_C3, Power_MI_C4, raw_MIData_filtered_C3,raw_MIData_filtered_C4,raw_RestData_filtered_C3,raw_RestData_filtered_C4 = get_power_and_DFA(MIData, RestData, fs=1000)
+            
+            #Write general data to ERD_data.csv. This creates the overall 
+            for channel, ERD in (('C3', MuSup_C3), ('C4', MuSup_C4)):
+              condition = "on-task" if ((MetaData[trial][3][0][0] == 1 and channel == 'C3') or (MetaData[trial][3][0][0] == 2 and channel == "C4")) else "off-task"
+              line = [Subject, Session, channel, trial_num, ERD, condition, MetaData[trial][3][0][0], MetaData[trial][4][0][0], MetaData[trial][5][0][0], MetaData[trial][6][0][0], MetaData[trial][7][0][0], MetaData[trial][8][0][0], MetaData[trial][9][0][0] ]
+              file.write(','.join(map(str, line)) + '\n')
+  
+            # Write baselined data to separate files for C3 and C4
+            #np.savetxt(file_c3, [MuSup_C3], delimiter=',')
+            #np.savetxt(file_c4, [MuSup_C4], delimiter=',')
+            
+            #np.savetxt(file_power_c3, [Power_MI_C3], delimiter=',')
+            #np.savetxt(file_power_c4, [Power_MI_C4], delimiter=',')
+            #np.savetxt(file_power_rest_c3, [Power_Rest_C3], delimiter=',')
+            #np.savetxt(file_power_rest_c4, [Power_Rest_C4], delimiter=',')
+  
+            np.savetxt(file_raw_c3, [raw_MIData_filtered_C3], delimiter=',')
+            np.savetxt(file_raw_c4, [raw_MIData_filtered_C4], delimiter=',')
+            np.savetxt(file_raw_rest_c3, [raw_RestData_filtered_C3], delimiter=',')
+            np.savetxt(file_raw_rest_c4, [raw_RestData_filtered_C4], delimiter=',')
+    except:
+      Faults.append(r"Participant{}, Session{}".format(Subject, Session) )
+
+
+```
+
+
+
+##Calculate DFA 
+```{r}
+#DFA values are used to verify whether alpha exponents exceed 1.5 (to verify whether the series need to be differentiated before entering MFDFA (see Ihnlen 2022))
+
+
+#Counts the number of lines, i.e. the number of total trials that are considered
+line_count <- length(count.fields("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Raw_C3_data.csv", sep = ","))
+
+#Set scales for use during DFA 
+Scales <- logscale(scale_min=10, scale_max = 312, scale_ratio = 1.3)
+
+
+# Establish read connection to raw data for both MI and Rest
+Con_C3 <- file("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Raw_C3_data.csv", open = "r")
+
+Con_C4 <- file("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Raw_C4_data.csv", open = "r")
+
+Con_Rest_C3 <- file("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Raw_Rest_C3_data.csv", open = "r")
+Con_Rest_C4 <- file("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Raw_Rest_C4_data.csv", open = "r")
+
+#Create empty lists to house the 
+MI_DFA_List <- list()
+Rest_DFA_List <- list()
+
+for (i in 1:line_count) {
+  # Read one line/trial from the input files alternately
+  Trial_C3 <- as.numeric(strsplit(readLines(Con_C3, n = 1, warn = FALSE), ",")[[1]])
+  #print(Trial_C3)
+  Trial_C4 <- as.numeric(strsplit(readLines(Con_C4, n = 1, warn = FALSE), ",")[[1]])
+  
+  Trial_Rest_C3 <- as.numeric(strsplit(readLines(Con_Rest_C3, n = 1, warn = FALSE), ",")[[1]])
+  Trial_Rest_C4 <- as.numeric(strsplit(readLines(Con_Rest_C4, n = 1, warn = FALSE), ",")[[1]])
+  
+  Dfa_Trial_C3 <- fractalRegression::dfa(Trial_C3, 2,verbose=FALSE, scales = Scales, scale_ratio = 1.3)
+  Dfa_Trial_C4 <- fractalRegression::dfa(Trial_C4, 2,verbose=FALSE, scales = Scales, scale_ratio = 1.3)
+  Dfa_Trial_Rest_C3 <- fractalRegression::dfa(Trial_Rest_C3, 2,verbose=FALSE, scales = Scales, scale_ratio = 1.3)
+  Dfa_Trial_Rest_C4 <- fractalRegression::dfa(Trial_Rest_C4, 2,verbose=FALSE, scales = Scales, scale_ratio = 1.3)
+  
+  MI_DFA_List <- append(MI_DFA_List, Dfa_Trial_C3$alpha)
+  MI_DFA_List <- append(MI_DFA_List, Dfa_Trial_C4$alpha)
+  
+  Rest_DFA_List <- append(Rest_DFA_List, Dfa_Trial_Rest_C3)
+  Rest_DFA_List <- append(Rest_DFA_List, Dfa_Trial_Rest_C4)
+  
+}
+
+print(MI_DFA_List)
+
+close(Con_C3)
+close(Con_C4)
+close(Con_Rest_C3)
+close(Con_Rest_C4)
+
+MI_DFA_df <- data.frame(values = unlist(MI_DFA_List))
+Rest_DFA_df <- data.frame(values = unlist(Rest_DFA_List))
+save(MI_DFA_df, file="E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MI_DFA_df.RData")
+save(Rest_DFA_df, file="E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Rest_DFA_df.RData")
+
+```
+
+```{r}
+#Boxplot shows that the 95% confidence falls below an alpha of 1.5
+boxplot(MI_DFA_df$values, main="Boxplot of Values", ylab="Values")
+``` 
+
+##Get Average power over trials
+```{r}
+#Create connections to the power paths.
+con_power_C3 <- file("E:\\MonsterDataset\\REBOOTPreprocessedData\\BetterValues\\Power_C3_data.csv", open = "r")
+con_power_C4 <- file("E:\\MonsterDataset\\REBOOTPreprocessedData\\BetterValues\\Power_C4_data.csv", open = "r")
+
+power_list <- list()
+for (i in 1:line_count) {
+  #Reads power of C3 and C4
+  power_C3 <- as.numeric(strsplit(readLines(con_power_C3, n = 1, warn = FALSE), ",")[[1]])
+  power_C4 <- as.numeric(strsplit(readLines(con_power_C4, n = 1, warn = FALSE), ",")[[1]])
+  
+  #calculates power over trial and appends it to list
+  power_list <- append(power_list, mean(power_C3))
+  power_list <- append(power_list, mean(power_C4))
+  
+}
+close(con_power_C3)
+close(con_power_C4)
+
+save(power_list, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\AveragePowers2.RData")
+
+```
+
+##Calculate MFDFA
+###Calculates MFDFA over MI for each trial
+```{r}
+scales <- logscale(scale_min=10, scale_max = 312, scale_ratio = 1.3)
+# File path for the MFDFA widths data
+widths_file_path <- "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\mf_dfa_widths.csv"
+
+# Ensure the files are empty and set up with the correct headers
+write.table(x = data.frame(mf_dfa_width = numeric(0)), file = widths_file_path, sep = ",", col.names = TRUE, row.names = FALSE)
+
+# Open the input files for reading
+con_C3 <- file("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Raw_C3_data.csv", open = "r")
+con_C4 <- file("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Raw_C4_data.csv", open = "r")
+
+# Loop over each trial
+for (i in 1:line_count) {
+  # Read one line/trial from the input files for both C3 and C4
+  trial_C3 <- as.numeric(strsplit(readLines(con_C3, n = 1, warn = FALSE), ",")[[1]])
+  trial_C4 <- as.numeric(strsplit(readLines(con_C4, n = 1, warn = FALSE), ",")[[1]])
+
+  # Perform MFDFA on the current MI trials
+  mf_dfa_trial_C3 <- mfdfa(x = trial_C3, q = c(-5:15), order = 2, scales = Scales, scale_ratio = 1.3)
+  mf_dfa_trial_C4 <- mfdfa(x = trial_C4, q = c(-5:15), order = 2, scales = Scales, scale_ratio = 1.3)
+  
+
+  #Save the MFDFA results in an Rdata file
+  save(mf_dfa_trial_C3, file = paste0("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\mfdfa\\mfdfa_trial_C3_", i, ".RData"))
+  save(mf_dfa_trial_C4, file = paste0("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\mfdfa\\mfdfa_trial_C4_", i, ".RData"))
+
+  # Calculate multifractal spectrum width
+  mf_dfa_width_C3 <- max(mf_dfa_trial_C3$h) - min(mf_dfa_trial_C3$h)
+  mf_dfa_width_C4 <- max(mf_dfa_trial_C4$h) - min(mf_dfa_trial_C4$h)
+
+  # Write widths to file
+  write.table(x = data.frame(mf_dfa_width_C3), file = widths_file_path, sep = ",", col.names = FALSE, row.names = FALSE, append = TRUE)
+  write.table(x = data.frame(mf_dfa_width_C4), file = widths_file_path, sep = ",", col.names = FALSE, row.names = FALSE, append = TRUE)
+
+}
+#Close input connections
+close(con_C3)
+close(con_C4)
+```
+
+###Calculates MFDFA over Rest for each trial
+```{r}
+scales <- logscale(scale_min=10, scale_max = 312, scale_ratio = 1.3)
+# File path for the MFDFA widths data
+widths_file_path <- "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\mf_dfa_widths_rest.csv"
+
+# Ensure the files are empty and set up with the correct headers
+write.table(x = data.frame(mf_dfa_width = numeric(0)), file = widths_file_path, sep = ",", col.names = TRUE, row.names = FALSE)
+
+# Open the Raw Rest input files for reading
+con_C3 <- file("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Raw_Rest_C3_data.csv", open = "r")
+con_C4 <- file("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Raw_Rest_C4_data.csv", open = "r")
+
+# Loop over each trial
+for (i in 1:line_count) {
+  # Read one line/trial from the input files for both C3 and C4
+  trial_C3 <- as.numeric(strsplit(readLines(con_C3, n = 1, warn = FALSE), ",")[[1]])
+  trial_C4 <- as.numeric(strsplit(readLines(con_C4, n = 1, warn = FALSE), ",")[[1]])
+
+  # Perform MFDFA on the current Rest trials
+  mf_dfa_trial_C3 <- mfdfa(x = trial_C3, q = c(-5:15), order = 2, scales = scales, scale_ratio = 1.3)
+  mf_dfa_trial_C4 <- mfdfa(x = trial_C4, q = c(-5:15), order = 2, scales = scales, scale_ratio = 1.3)
+  
+
+  #Save the MFDFA results in an Rdata file
+  save(mf_dfa_trial_C3, file = paste0("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\mfdfa_rest\\mfdfa_trial_C3_", i, ".RData"))
+  save(mf_dfa_trial_C4, file = paste0("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\mfdfa_rest\\mfdfa_trial_C4_", i, ".RData"))
+
+  # Calculate multifractal spectrum width
+  mf_dfa_width_C3 <- max(mf_dfa_trial_C3$h) - min(mf_dfa_trial_C3$h)
+  mf_dfa_width_C4 <- max(mf_dfa_trial_C4$h) - min(mf_dfa_trial_C4$h)
+
+  # Write widths to file
+  write.table(x = data.frame(mf_dfa_width_C3), file = widths_file_path, sep = ",", col.names = FALSE, row.names = FALSE, append = TRUE)
+  write.table(x = data.frame(mf_dfa_width_C4), file = widths_file_path, sep = ",", col.names = FALSE, row.names = FALSE, append = TRUE)
+
+}
+#Close input connections
+close(con_C3)
+close(con_C4)
+```
+
+
+
+
+
+
+##Lateralization Index
+```{r}
+#Make sure that the values within the dataframe are all numeric
+ERD_data <- ERD_data %>%
+  mutate(
+    Power = as.numeric(Power),
+    MFDFA_Widths = as.numeric(MFDFA_Widths),
+    MFDFA_Widths_rest = as.numeric(MFDFA_Widths_rest),
+    MFDFA_Widths_diff = as.numeric(MFDFA_Widths_diff),
+    forcedresults = as.numeric(forcedresult)
+  )
+
+
+#Create a shorter dataframe which holds the average values over trials (for unique subjects, sessions, channels, and target direction)
+AveragedOverTrials_Dataframe <- ERD_data %>%
+  group_by(Subject, Session, Channel, targetnumber) %>%
+  summarise(
+    mean_ERD = mean(ERD, na.rm = TRUE),
+    mean_power = mean(Power, na.rm = TRUE),
+    mean_MFDFA = mean(MFDFA_Widths, na.rm = TRUE),
+    mean_MFDFA_Widths_rest = mean(MFDFA_Widths_rest, na.rm = TRUE),
+    mean_MFDFA_Widths_diff = mean(MFDFA_Widths_diff, na.rm = TRUE),
+    accuracy = mean(forcedresult, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+#Calculate groups based on K means clustering (2 groups) based on performance
+kmeans_result <- kmeans(AveragedOverTrials_Dataframe$accuracy, centers = 2)
+AveragedOverTrials_Dataframe$cluster <- kmeans_result$cluster
+
+mean_cluster1 <- mean(AveragedOverTrials_Dataframe$accuracy[AveragedOverTrials_Dataframe$cluster == 1])
+mean_cluster2 <- mean(AveragedOverTrials_Dataframe$accuracy[AveragedOverTrials_Dataframe$cluster == 2])
+
+# Swap cluster labels if necessary to ensure mean of cluster 1 is lower than cluster 2
+if (mean_cluster1 > mean_cluster2) {
+  AveragedOverTrials_Dataframe$cluster <- ifelse(AveragedOverTrials_Dataframe$cluster == 1, 2, 1)
+}
+
+#Change the labels from 1/2 to low/high
+AveragedOverTrials_Dataframe$cluster <- ifelse(AveragedOverTrials_Dataframe$cluster == 1, "low", "high")
+
+#Get Average for Power, and label the combinations of Left/Right MI, and C3/C4
+AvgTrials_Power <- AveragedOverTrials_Dataframe %>%
+  pivot_wider(names_from = c(Channel, targetnumber), values_from = mean_power,
+              names_sep = "")#This creates columns like C31, C32, C41, C42(Where C3 or C4 is the channel, and 1 or 2 is the target)
+
+#Do the same for MFDFA values
+AvgTrials_MFDFA <- AveragedOverTrials_Dataframe %>%
+  pivot_wider(names_from = c(Channel, targetnumber), values_from = mean_MFDFA,
+              names_sep = "")#This creates columns like C31, C32, C41, C42(Where C3 or C4 is the channel, and 1 or 2 is the target)
+
+#Do the same for MFDFA diff values
+AvgTrials_MFDFA_diff <- AveragedOverTrials_Dataframe %>%
+  pivot_wider(names_from = c(Channel, targetnumber), values_from = mean_MFDFA_Widths_diff,
+              names_sep = "")#This creates columns like C31, C32, C41, C42(Where C3 or C4 is the channel, and 1 or 2 is the target)
+
+LI_combined <- data.frame(
+  PowerC32 = AvgTrials_Power$C32[!is.na(AvgTrials_Power$C32)],
+  PowerC42 = AvgTrials_Power$C42[!is.na(AvgTrials_Power$C42)],
+  PowerC41 = AvgTrials_Power$C41[!is.na(AvgTrials_Power$C41)],
+  PowerC31 = AvgTrials_Power$C31[!is.na(AvgTrials_Power$C31)],
+  MFDFAC32 = AvgTrials_MFDFA$C32[!is.na(AvgTrials_MFDFA$C32)],
+  MFDFAC42 = AvgTrials_MFDFA$C42[!is.na(AvgTrials_MFDFA$C42)],
+  MFDFAC41 = AvgTrials_MFDFA$C41[!is.na(AvgTrials_MFDFA$C41)],
+  MFDFAC31 = AvgTrials_MFDFA$C31[!is.na(AvgTrials_MFDFA$C31)],
+  MFDFA_diff_C32 = AvgTrials_MFDFA_diff$C32[!is.na(AvgTrials_MFDFA_diff$C32)],
+  MFDFA_diff_C42 = AvgTrials_MFDFA_diff$C42[!is.na(AvgTrials_MFDFA_diff$C42)],
+  MFDFA_diff_C41 = AvgTrials_MFDFA_diff$C41[!is.na(AvgTrials_MFDFA_diff$C41)],
+  MFDFA_diff_C31 = AvgTrials_MFDFA_diff$C31[!is.na(AvgTrials_MFDFA_diff$C31)]
+)
+
+# Calculate the LI columns
+LI_combined$LI <- ((LI_combined$PowerC32 - LI_combined$PowerC42) + (LI_combined$PowerC41 - LI_combined$PowerC31)) / 2
+LI_combined$MFDFA_LI <- ((LI_combined$MFDFAC32 - LI_combined$MFDFAC42) + (LI_combined$MFDFAC41 - LI_combined$MFDFAC31)) / 2
+LI_combined$MFDFA_diff_LI <- ((LI_combined$MFDFA_diff_C32 - LI_combined$MFDFA_diff_C42) + (LI_combined$MFDFA_diff_C41 - LI_combined$MFDFA_diff_C31)) / 2
+
+
+#Subset the Subject, Session, and cluster
+Clusters <- AveragedOverTrials_Dataframe %>%
+  select(Subject, Session, cluster)
+
+#Make sure only 1 session is taken each time.
+Clusters <- Clusters %>%
+  distinct(Subject, Session, .keep_all = TRUE)
+
+#Add the correct subject, session and cluster pairs to LI_combined
+LI_combined$Subject <- Clusters$Subject
+LI_combined$Session <- Clusters$Session
+LI_combined$cluster <- Clusters$cluster
+
+#For some reason there is 1 extreme outlier for LI. This one session is manually removed for clarity.
+LI_combined <- LI_combined %>%
+  filter(LI >= -40000)
+
+```
+
+##Temporal features
+###Detrended Fluctuation Analysis
+```{r}
+#First create a new dataframe that only considers the contra-lateral side
+Temporal_data <- ERD_data %>%
+    group_by(Subject, Session, Trial) %>%
+    filter(OnTask == "on-task")
+  
+
+
+perform_dfa <- function(data) {
+  if(length(data) == 0) {
+    warning("No data received by perform_dfa")
+    return(NA)  # Returning NA or another placeholder if no data is available
+  }
+  dfa_result <- dfa(data, order = 2, verbose = 1, scales = logscale(8, 225/4, 1.1), scale_ratio = 1.1)
+  #print(dfa_result$alpha)
+  return(dfa_result$alpha)  # return the scaling exponent from the DFA result
+}
+
+dfa_results <- Temporal_data %>%
+  group_by(Subject, Session) %>%
+  summarise(DFA_alpha_ERD = perform_dfa(ERD),
+            DFA_alpha_MFDFA_Widths = perform_dfa(MFDFA_Widths),
+            DFA_alpha_MFDFA_Widths_diff = perform_dfa(MFDFA_Widths_diff))
+
+dfa_results$cluster <- Clusters$cluster
+```
+
+###Autocorrelation Function
+####ERD
+```{r}
+# Create a list to store ACF results for each session and participant
+acf_results <- list()
+
+# Loop over each participant
+unique_participants <- unique(Temporal_data$Subject)
+
+
+for (participant in unique_participants) {
+    # Loop through each session for the current participant
+    participant_data <- Temporal_data[Temporal_data$Subject == participant,]
+    unique_sessions <- unique(participant_data$Session)
+    for (session in unique_sessions) {
+        session_data <- participant_data[participant_data$Session == session,]
+    
+        # Calculate ACF for ERD for the current session and participant
+        acf_key <- paste(participant, session, sep = "_")
+        if (length(session_data$ERD) > 10) {  # Check if sufficient data points
+            acf_result <- acf(session_data$ERD, plot = FALSE)
+            acf_values <- acf_result$acf
+            lag_length <- min(length(acf_values), 21)  # Limit to 20 lags
+            acf_results[[acf_key]] <- data.frame(Lag = 0:(lag_length - 1), ACF = acf_values[1:lag_length], N = length(session_data$ERD))
+        } else {
+            acf_results[[acf_key]] <- data.frame(Lag = 0:20, ACF = rep(NA, 21), N = length(session_data$ERD))  # Assuming default lag of 20
+        }
+    }
+}
+
+# Combine all ACF results into one data frame
+acf_data_frame <- do.call(rbind, lapply(names(acf_results), function(x) {
+    parts <- strsplit(x, "_")[[1]]
+    participant <- parts[1]
+    session <- parts[2]
+    cbind(Participant = participant, Session = session, acf_results[[x]])
+}))
+
+# Calculate average ACF per session across all participants
+average_acf_data <- acf_data_frame %>%
+    group_by(Session, Lag) %>%
+    summarize(mean_acf = mean(ACF, na.rm = TRUE),
+              se_acf = sd(ACF, na.rm = TRUE) / sqrt(n()),
+              .groups = 'drop')
+
+```
+
+####MFDFA
+```{r}
+
+# Create a list to store ACF results for each session and participant
+acf_results <- list()
+
+# Loop over each participant
+unique_participants <- unique(Temporal_data$Subject)
+for (participant in unique_participants) {
+    # Loop through each session for the current participant
+    participant_data <- Temporal_data[Temporal_data$Subject == participant,]
+    unique_sessions <- unique(participant_data$Session)
+    for (session in unique_sessions) {
+        session_data <- participant_data[participant_data$Session == session,]
+
+        # Calculate ACF for MFDFA_Widths for the current session and participant
+        acf_key <- paste(participant, session, sep = "_")
+        if (length(session_data$MFDFA_Widths) > 10) {  # Check if sufficient data points
+            acf_result <- acf(session_data$MFDFA_Widths, plot = FALSE)
+            acf_values <- acf_result$acf
+            lag_length <- min(length(acf_values), 21)  # Limit to 20 lags
+            acf_results[[acf_key]] <- data.frame(Lag = 0:(lag_length - 1), ACF = acf_values[1:lag_length])
+        } else {
+            acf_results[[acf_key]] <- data.frame(Lag = 0:20, ACF = rep(NA, 21))  # Assuming default lag of 20
+        }
+    }
+}
+
+# Combine all ACF results into one data frame
+acf_data_frame <- do.call(rbind, lapply(names(acf_results), function(x) {
+    parts <- strsplit(x, "_")[[1]]
+    participant <- parts[1]
+    session <- parts[2]
+    cbind(Participant = participant, Session = session, acf_results[[x]])
+}))
+
+average_acf_data_MFDFA_Widths <- acf_data_frame %>%
+    group_by(Session, Lag) %>%
+    summarize(mean_acf = mean(ACF, na.rm = TRUE),
+              se_acf = sd(ACF, na.rm = TRUE) / sqrt(n()),
+              .groups = 'drop')
+
+
+```
+
+####MFDFA_Diff
+```{r}
+
+# Create a list to store ACF results for each session and participant
+acf_results <- list()
+
+# Loop over each participant
+unique_participants <- unique(Temporal_data$Subject)
+SuccessfullyDone <- list()
+for (participant in unique_participants) {
+    # Loop through each session for the current participant
+    participant_data <- Temporal_data[Temporal_data$Subject == participant,]
+    
+    unique_sessions <- unique(participant_data$Session)
+    for (session in unique_sessions) {
+        session_data <- participant_data[participant_data$Session == session,]
+
+        # Calculate ACF for MFDFA_Widths_diff for the current session and participant
+        acf_key <- paste(participant, session, sep = "_")
+        if (length(session_data$MFDFA_Widths_diff) > 10) {  # Check if sufficient data points
+            acf_result <- acf(session_data$MFDFA_Widths_diff, plot = FALSE)
+            acf_values <- acf_result$acf
+            lag_length <- min(length(acf_values), 21)  # Limit to 20 lags
+            acf_results[[acf_key]] <- data.frame(Lag = 0:(lag_length - 1), ACF = acf_values[1:lag_length])
+            SuccessfullyDone <- append(SuccessfullyDone, acf_key)
+        } else {
+            acf_results[[acf_key]] <- data.frame(Lag = 0:20, ACF = rep(NA, 21))  # Assuming default lag of 20
+        }
+    }
+}
+
+# Combine all ACF results into one data frame
+acf_data_frame_diff <- do.call(rbind, lapply(names(acf_results), function(x) {
+    parts <- strsplit(x, "_")[[1]]
+    participant <- parts[1]
+    session <- parts[2]
+    cbind(Participant = participant, Session = session, acf_results[[x]])
+}))
+
+average_acf_data_MFDFA_Widths_diff <- acf_data_frame_diff %>%
+    group_by(Session, Lag) %>%
+    summarize(mean_acf = mean(ACF, na.rm = TRUE),
+              se_acf = sd(ACF, na.rm = TRUE) / sqrt(n()),
+              .groups = 'drop')
+
+```
+
+
+The following section is focused on presenting the data, as well as running statistical tests
+
+#Statistical tests
+##Compare metrics between contra/ipsilateral hemispheres
+```{r}
+ERD_data$OnTask <- factor(ERD_data$OnTask)
+# Perform Wilcoxon test for ERD values between ipsi-and contralateral channels
+wilcox_test_ERD_laterality <- wilcox.test(ERD ~ OnTask, data = ERD_data, exact = FALSE)
+
+# Perform Wilcoxon test for LI values of mean_MFDFA
+wilcox_test_MFDFA_laterality <- wilcox.test(MFDFA_Widths ~ OnTask, data = ERD_data, exact = FALSE)
+
+#Perform Wilcoxon test for LI values of mean_MFDFA_diff
+wilcox_test_MFDFA_Width_laterality <- wilcox.test(MFDFA_Widths_diff ~ OnTask, data = ERD_data, exact = FALSE)
+
+# Extract p-values
+p_values <- c(wilcox_test_ERD_laterality$p.value, wilcox_test_MFDFA_laterality$p.value, wilcox_test_MFDFA_Width_laterality$p.value)
+
+# Apply Bonferroni correction
+p_adjusted <- p.adjust(p_values, method = "bonferroni")
+
+result <- data.frame(
+  Test = c("mean_power", "mean_MFDFA", "mean_MFDFA_diff"),
+  P_Value = p_values,
+  P_Adjusted = p_adjusted
+)
+
+print(result)
+```
+
+##Statistically compare MFDFA Widths between MI and Rest for succesfull and unsuccessful trials
+```{r}
+
+# Add a condition column to the dataframe
+MI_data <- ERD_data %>%
+  mutate(
+    condition = ifelse(forcedresult == 1, "MI_successful", "MI_unsuccessful")
+  ) %>%
+  select(Session, Subject, condition, width = MFDFA_Widths)
+
+Rest_data <- ERD_data %>%
+  mutate(
+    condition = ifelse(forcedresult == 1, "Rest_successful", "Rest_unsuccessful")
+  ) %>%
+  select(Session, Subject, condition, width = MFDFA_Widths_rest)
+
+# Combine MI and Rest dataframes
+combined_data <- bind_rows(MI_data, Rest_data) %>%
+  filter(!is.na(width))
+
+# Test 1: Differences between successful and unsuccessful MI trials
+MI_successful <- combined_data %>% filter(condition == "MI_successful")
+MI_unsuccessful <- combined_data %>% filter(condition == "MI_unsuccessful")
+
+test1_result <- wilcox.test(MI_successful$width, MI_unsuccessful$width, 
+                            alternative = "two.sided")
+test1_effect_size <- combined_data %>%
+  filter(condition %in% c("MI_successful", "MI_unsuccessful")) %>%
+  wilcox_effsize(width ~ condition, paired = FALSE)
+
+# Test 2: Differences between successful and unsuccessful Rest trials
+Rest_successful <- combined_data %>% filter(condition == "Rest_successful")
+Rest_unsuccessful <- combined_data %>% filter(condition == "Rest_unsuccessful")
+
+test2_result <- wilcox.test(Rest_successful$width, Rest_unsuccessful$width, 
+                            alternative = "two.sided")
+test2_effect_size <- combined_data %>%
+  filter(condition %in% c("Rest_successful", "Rest_unsuccessful")) %>%
+  wilcox_effsize(width ~ condition, paired = FALSE)
+
+# Combine successful and unsuccessful data and test Rest vs MI
+combined_successful <- bind_rows(MI_successful, Rest_successful)
+combined_unsuccessful <- bind_rows(MI_unsuccessful, Rest_unsuccessful)
+
+# Test 3: Successful Rest vs MI
+test3_result_successful <- wilcox.test(combined_successful$width ~ combined_successful$condition, 
+                                       alternative = "two.sided")
+test3_effect_size <- combined_successful %>%
+  wilcox_effsize(width ~ condition, paired = FALSE)
+
+# Test 4: Unsuccessful Rest vs MI
+test4_result_unsuccessful <- wilcox.test(combined_unsuccessful$width ~ combined_unsuccessful$condition, 
+                                         alternative = "two.sided")
+test4_effect_size <- combined_unsuccessful %>%
+  wilcox_effsize(width ~ condition, paired = FALSE)
+
+# Collect p-values
+p_values <- c(test1_result$p.value, test2_result$p.value, 
+              test3_result_successful$p.value, test4_result_unsuccessful$p.value)
+
+# Apply Holm-Bonferroni correction
+adjusted_p_values <- p.adjust(p_values, method = "holm")
+
+# Collect effect sizes
+effect_sizes <- c(test1_effect_size$effsize, test2_effect_size$effsize, 
+                  test3_effect_size$effsize, test4_effect_size$effsize)
+
+
+# Classify effect sizes
+classify_effect_size <- function(effect_size) {
+  if (effect_size < 0.1) {
+    return("Very Small")
+  } else if (effect_size < 0.3) {
+    return("Small")
+  } else if (effect_size < 0.5) {
+    return("Medium")
+  } else {
+    return("Large")
+  }
+}
+
+effect_size_classes <- sapply(effect_sizes, classify_effect_size)
+
+# Display the results
+results <- data.frame(
+  Test = c("MI_successful vs MI_unsuccessful", 
+           "Rest_successful vs Rest_unsuccessful", 
+           "Successful Rest vs MI", 
+           "Unsuccessful Rest vs MI"),
+  Original_p_value = p_values,
+  Adjusted_p_value = adjusted_p_values,
+  Effect_Size = effect_sizes,
+  Effect_Size_Class = effect_size_classes
+)
+
+print(results)
+
+```
+
+##Statistically compare the LI's between clusters
+```{r}
+# Perform Wilcoxon test for LI values of mean_Power
+wilcox_test_mean_power <- wilcox.test(LI ~ cluster, data = LI_combined, exact = FALSE)
+
+# Perform Wilcoxon test for LI values of mean_MFDFA
+wilcox_test_mean_MFDFA <- wilcox.test(MFDFA_LI ~ cluster, data = LI_combined, exact = FALSE)
+
+#Perform Wilcoxon test for LI values of mean_MFDFA_diff
+wilcox_test_mean_MFDFA_diff <- wilcox.test(MFDFA_diff_LI ~ cluster, data = LI_combined, exact = FALSE)
+
+# Extract p-values
+p_values <- c(wilcox_test_mean_power$p.value, wilcox_test_mean_MFDFA$p.value, wilcox_test_mean_MFDFA_diff$p.value)
+
+# Apply Bonferroni correction
+p_adjusted <- p.adjust(p_values, method = "bonferroni")
+
+# Display the results
+result <- data.frame(
+  Test = c("mean_power", "mean_MFDFA", "mean_MFDFA_diff"),
+  P_Value = p_values,
+  P_Adjusted = p_adjusted
+)
+
+print(result)
+```
+
+
+
+##Compare the LI's against zero
+```{r}
+#Creates function that tests whether the distribution is different from 0
+perform_wilcoxon_test <- function(data, variable) {
+  data %>%
+    group_by(cluster) %>%
+    summarise(p_value = wilcox.test(get(variable), mu = 0, exact = FALSE)$p.value)
+}
+
+# Perform Wilcoxon signed-rank tests
+wilcox_test_power <- perform_wilcoxon_test(LI_combined, "LI")
+wilcox_test_MFDFA <- perform_wilcoxon_test(LI_combined, "MFDFA_LI")
+wilcox_test_MFDFA_diff <- perform_wilcoxon_test(LI_combined, "MFDFA_diff_LI")
+
+# Combine p-values
+p_values_cluster <- c(wilcox_test_power$p_value, wilcox_test_MFDFA$p_value, wilcox_test_MFDFA_diff$p_value)
+
+# Apply Bonferroni correction
+p_adjusted_cluster <- p.adjust(p_values_cluster, method = "bonferroni")
+
+# Create labels for p-values
+significance_label_cluster <- ifelse(p_adjusted_cluster < 0.001, "<0.001", formatC(p_adjusted_cluster, format = "e", digits = 2))
+
+# Separate adjusted p-values by variable
+p_adjusted_power <- p_adjusted_cluster[1:length(wilcox_test_power$p_value)]
+p_adjusted_MFDFA <- p_adjusted_cluster[(length(wilcox_test_power$p_value) + 1):(length(wilcox_test_power$p_value) + length(wilcox_test_MFDFA$p_value))]
+p_adjusted_MFDFA_diff <- p_adjusted_cluster[(length(wilcox_test_power$p_value) + length(wilcox_test_MFDFA$p_value) + 1):length(p_adjusted_cluster)]
+
+p_adjusted_power 
+p_adjusted_MFDFA 
+p_adjusted_MFDFA_diff 
+```
+
+```{r}
+# Load necessary packages
+library(dplyr)
+library(stats)
+library(xtable)
+
+# Function to perform Wilcoxon signed-rank test
+perform_wilcoxon_test <- function(data, variable) {
+  data %>%
+    group_by(cluster) %>%
+    summarise(p_value = wilcox.test(get(variable), mu = 0, alternative = "greater", exact = FALSE)$p.value)
+}
+
+# Perform Wilcoxon signed-rank tests
+wilcox_test_power <- perform_wilcoxon_test(LI_combined, "LI")
+wilcox_test_MFDFA <- perform_wilcoxon_test(LI_combined, "MFDFA_LI")
+wilcox_test_MFDFA_diff <- perform_wilcoxon_test(LI_combined, "MFDFA_diff_LI")
+
+# Combine p-values
+p_values_cluster <- c(wilcox_test_power$p_value, wilcox_test_MFDFA$p_value, wilcox_test_MFDFA_diff$p_value)
+
+# Apply Bonferroni correction
+p_adjusted_cluster <- p.adjust(p_values_cluster, method = "bonferroni")
+
+# Create labels for p-values
+significance_label_cluster <- ifelse(p_adjusted_cluster < 0.001, "<0.001", formatC(p_adjusted_cluster, format = "e", digits = 2))
+
+# Separate adjusted p-values by variable
+p_adjusted_power <- p_adjusted_cluster[1:length(wilcox_test_power$p_value)]
+p_adjusted_MFDFA <- p_adjusted_cluster[(length(wilcox_test_power$p_value) + 1):(length(wilcox_test_power$p_value) + length(wilcox_test_MFDFA$p_value))]
+p_adjusted_MFDFA_diff <- p_adjusted_cluster[(length(wilcox_test_power$p_value) + length(wilcox_test_MFDFA$p_value) + 1):length(p_adjusted_cluster)]
+
+# Combine results into a data frame
+results <- data.frame(
+  Cluster = c(1, 2),
+  Power = formatC(p_adjusted_power, format = "e", digits = 2),
+  MFDFA = formatC(p_adjusted_MFDFA, format = "e", digits = 2),
+  MFDFA_Diff = formatC(p_adjusted_MFDFA_diff, format = "e", digits = 2)
+)
+
+# Create a LaTeX table using xtable
+table <- xtable(results, caption = "Adjusted p-values from Wilcoxon Tests (Greater than Zero)", label = "tab:adjusted_pvalues")
+
+# Print the LaTeX table
+print(table, include.rownames = FALSE, sanitize.text.function = identity)
+
+
+```
+```{r}
+# Results
+p_adjusted_power <- c(2.149024e-34, 4.061353e-09)
+p_adjusted_MFDFA <- c(3.923094e-21, 1.000000e+00)
+p_adjusted_MFDFA_diff <- c(1.914732e-18, 1.000000e+00)
+
+# Combine results into a data frame
+results <- data.frame(
+  Cluster = c(1, 2),
+  Power = formatC(p_adjusted_power, format = "e", digits = 2),
+  MFDFA = formatC(p_adjusted_MFDFA, format = "e", digits = 2),
+  MFDFA_Diff = formatC(p_adjusted_MFDFA_diff, format = "e", digits = 2)
+)
+
+# Create a LaTeX table using xtable
+library(xtable)
+table <- xtable(results, caption = "Adjusted p-values from Wilcoxon Tests", label = "tab:adjusted_pvalues")
+
+# Print the LaTeX table
+print(table, include.rownames = FALSE, sanitize.text.function = identity)
+
+
+```
+
+
+```{r}
+library(dplyr)
+library(purrr)
+library(tibble)
+library(broom)
+library(MuMIn)
+
+summarize_model_with_p <- function(model) {
+  summary_model <- summary(model)
+  fixed_effects <- tidy(model, effects = "fixed", conf.int = TRUE)
+  random_effects <- tidy(model, effects = "ran_pars", conf.int = TRUE)
+  aic_value <- AIC(model)
+  bic_value <- BIC(model)
+  log_likelihood <- logLik(model)
+  
+  # Calculate R² values
+  r_squared <- r.squaredGLMM(model)
+  
+  list(fixed = fixed_effects, random = random_effects, aic = aic_value, bic = bic_value, logLik = log_likelihood, r_squared = r_squared)
+}
+
+combine_summaries <- function(summaries, model_names) {
+  bind_rows(
+    lapply(seq_along(summaries), function(i) {
+      summaries[[i]]$fixed %>%
+        dplyr::select(term, estimate, std.error, statistic, p.value, conf.low, conf.high) %>%
+        mutate(model = model_names[i], r_squared = summaries[[i]]$r_squared[1, "R2c"]) %>%
+        dplyr::select(model, r_squared, everything())
+    })
+  )
+}
+
+# ERD is log transformed, so it needs to be transformed back
+back_transform_erd <- function(log_estimate, log_conf_low, log_conf_high, log_std_error, min_ERD) {
+  estimate <- exp(log_estimate) - abs(min_ERD) - 0.001
+  conf_low <- exp(log_conf_low) - abs(min_ERD) - 0.001
+  conf_high <- exp(log_conf_high) - abs(min_ERD) - 0.001
+  std_error <- exp(log_std_error) - abs(min_ERD) - 0.001
+  return(list(estimate = estimate, conf_low = conf_low, conf_high = conf_high, std_error = std_error))
+}
+
+# Assume min_ERD is defined elsewhere in your code
+min_ERD <- min(ERD_data$ERD)
+
+# Summarize the models
+summary_ERD_Trial_Model <- summarize_model_with_p(ERD_Trial_Model)
+summary_MFDFA_Widths_Trial_Model <- summarize_model_with_p(MFDFA_Widths_Trial_Model)
+summary_MFDFA_Widths_diff_Trial_Model <- summarize_model_with_p(MFDFA_Widths_diff_Trial_Model)
+summary_MFDFA_Widths_rest_Trial_Model <- summarize_model_with_p(MFDFA_Widths_rest_Trial_Model)
+
+# Back-transform the ERD estimates
+summary_ERD_Trial_Model$fixed <- summary_ERD_Trial_Model$fixed %>%
+  mutate(
+    transformed = purrr::pmap(list(estimate, conf.low, conf.high, std.error), ~ back_transform_erd(..1, ..2, ..3, ..4, min_ERD)),
+    estimate = map_dbl(transformed, "estimate"),
+    conf.low = map_dbl(transformed, "conf_low"),
+    conf.high = map_dbl(transformed, "conf_high"),
+    std.error = map_dbl(transformed, "std_error")
+  ) %>%
+  dplyr::select(-transformed)
+
+# List of model summaries
+trial_model_summaries <- list(
+  summary_ERD_Trial_Model,
+  summary_MFDFA_Widths_Trial_Model,
+  summary_MFDFA_Widths_diff_Trial_Model,
+  summary_MFDFA_Widths_rest_Trial_Model
+)
+
+model_names <- c("ERD - Trials", "MFDFA Widths - Trials", "MFDFA Widths-Diff - Trials", "MFDFA Widths-Rest - Trials")
+
+dense_table_trial <- combine_summaries(trial_model_summaries, model_names) %>%
+  as_tibble()
+
+# Display the table
+print(dense_table_trial)
+
+
+```
+
+#Plotting
+
+##Aggregating MFDFA data
+```{r}
+#Function that can be called that loads in the MFDFA data that was stored per trial
+load_mfdfa_C3 <- function(index) {
+  load(sprintf("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\mfdfa\\mfdfa_trial_C3_%d.Rdata", index))
+  return(list(
+    q = mf_dfa_trial_C3$q,
+    Hq = mf_dfa_trial_C3$Hq,
+    Tau = mf_dfa_trial_C3$Tau,
+    h = mf_dfa_trial_C3$h,
+    Dh = mf_dfa_trial_C3$Dh
+  ))
+}
+
+load_mfdfa_rest_C3 <- function(index) {
+  load(sprintf("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\mfdfa_rest\\mfdfa_trial_C3_%d.Rdata", index))
+  return(list(
+    Rq = mf_dfa_trial_C3$q,
+    RHq = mf_dfa_trial_C3$Hq,
+    RTau = mf_dfa_trial_C3$Tau,
+    Rh = mf_dfa_trial_C3$h,
+    RDh = mf_dfa_trial_C3$Dh
+  ))
+}
+
+#Function that can be called that loads in the MFDFA data that was stored per trial
+load_mfdfa_C4 <- function(index) {
+  load(sprintf("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\mfdfa\\mfdfa_trial_C4_%d.Rdata", index))
+  return(list(
+    q = mf_dfa_trial_C4$q,
+    Hq = mf_dfa_trial_C4$Hq,
+    Tau = mf_dfa_trial_C4$Tau,
+    h = mf_dfa_trial_C4$h,
+    Dh = mf_dfa_trial_C4$Dh
+  ))
+}
+
+load_mfdfa_rest_C4 <- function(index) {
+  load(sprintf("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\mfdfa_rest\\mfdfa_trial_C4_%d.Rdata", index))
+  return(list(
+    Rq = mf_dfa_trial_C4$q,
+    RHq = mf_dfa_trial_C4$Hq,
+    RTau = mf_dfa_trial_C4$Tau,
+    Rh = mf_dfa_trial_C4$h,
+    RDh = mf_dfa_trial_C4$Dh
+  ))
+}
+
+
+
+
+
+ERD_DF_MFDFA <- ERD_data[ERD_data$Channel != "C3", ]
+row.names(ERD_DF_MFDFA) <- NULL
+ERD_DF_MFDFA$index <- seq_len(nrow(ERD_DF_MFDFA))
+
+#xholder0 <- matrix(0, nrow = 7041, ncol = 1)
+#orderholder0 <- 0
+#qholder0 <- matrix(0, nrow = 21, ncol = 1)
+#scalesholder0 <- matrix(0, nrow = 7, ncol = 1)
+#scales_ratioholder0 <- 0
+#log_scaleholder0 <- matrix(0, nrow = 7, ncol = 1)
+#log_fqholder0 <- matrix(0, nrow = 7, ncol = 21)
+#Hqholder0 <- matrix(0, nrow = 21, ncol = 1)
+#Tauholder0 <- matrix(0, nrow = 21, ncol = 1)
+hholder0 <- matrix(0, nrow = 20, ncol = 1)
+Dholder0 <- matrix(0, nrow = 20, ncol = 1)
+qholder0 <- matrix(0, nrow = 21, ncol = 1)
+Hqholder0 <- matrix(0, nrow = 21, ncol = 1)
+Tauholder0 <- matrix(0, nrow = 21, ncol = 1)
+
+Rhholder0 <- matrix(0, nrow = 20, ncol = 1)
+RDholder0 <- matrix(0, nrow = 20, ncol = 1)
+Rqholder0 <- matrix(0, nrow = 21, ncol = 1)
+RHqholder0 <- matrix(0, nrow = 21, ncol = 1)
+RTauholder0 <- matrix(0, nrow = 21, ncol = 1)
+
+hholder1 <- matrix(0, nrow = 20, ncol = 1)
+Dholder1 <- matrix(0, nrow = 20, ncol = 1)
+qholder1 <- matrix(0, nrow = 21, ncol = 1)
+Hqholder1 <- matrix(0, nrow = 21, ncol = 1)
+Tauholder1 <- matrix(0, nrow = 21, ncol = 1)
+
+Rhholder1 <- matrix(0, nrow = 20, ncol = 1)
+RDholder1 <- matrix(0, nrow = 20, ncol = 1)
+Rqholder1 <- matrix(0, nrow = 21, ncol = 1)
+RHqholder1 <- matrix(0, nrow = 21, ncol = 1)
+RTauholder1 <- matrix(0, nrow = 21, ncol = 1)
+
+# Loop through each forcedresult type
+for (forced_result in c(0, 1)) {
+  # Gather all data indices for the given target direction
+  forced_data_indices <- ERD_DF_MFDFA$index[ERD_DF_MFDFA$forcedresult == forced_result]
+
+  
+  
+  
+  # Load MFDFA data for each index for C3
+  # mfdfa_data <- lapply(forced_data_indices, load_mfdfa_C3)
+  # if (length(mfdfa_data) > 0) {
+  #   # Assign results to the appropriate list based on forced_result
+  #   if (forced_result == 0) {
+  #     #Stores the total number of MFDFA trials that went into the dataframe
+  #     zeroresult <<- length(mfdfa_data)
+  #     sapply(mfdfa_data, function(x) {
+  #       qholder0 <<- qholder0 + x[["q"]]
+  #       Hqholder0 <<- Hqholder0 + x[["Hq"]]
+  #       Tauholder0 <<- Tauholder0 + x[["Tau"]]
+  #       hholder0 <<- hholder0 + x[["h"]]
+  #       Dholder0 <<- Dholder0 + x[["Dh"]]})
+  #       }
+  #   else {
+  #     oneresult <<- length(mfdfa_data)
+  #     sapply(mfdfa_data, function(x) {
+  #       qholder1 <<- qholder1 + x[["q"]]
+  #       Hqholder1 <<- Hqholder1 + x[["Hq"]]
+  #       Tauholder1 <<- Tauholder1 + x[["Tau"]]
+  #       hholder1 <<- hholder1 + x[["h"]]
+  #       Dholder1 <<- Dholder1 + x[["Dh"]]})}
+  #   
+  #   }
+
+#Aggregate MFDFA data for C3 rest
+mfdfa_data_rest <- lapply(forced_data_indices, load_mfdfa_rest_C3)
+if (length(mfdfa_data_rest) > 0) {
+  # Assign results to the appropriate list based on forced_result
+  if (forced_result == 0) {
+    #Stores the total number of MFDFA trials that went into the dataframe
+    zeroresult_r <<- length(mfdfa_data_rest)
+    sapply(mfdfa_data_rest, function(x) {
+      Rqholder0 <<- Rqholder0 + x[["Rq"]]
+      RHqholder0 <<- RHqholder0 + x[["RHq"]]
+      RTauholder0 <<- RTauholder0 + x[["RTau"]]
+      Rhholder0 <<- Rhholder0 + x[["Rh"]]
+      RDholder0 <<- RDholder0 + x[["RDh"]]})}
+  else {
+    oneresult_r <<- length(mfdfa_data_rest)
+    sapply(mfdfa_data_rest, function(x) {
+      Rqholder1 <<- Rqholder1 + x[["Rq"]]
+      RHqholder1 <<- RHqholder1 + x[["RHq"]]
+      RTauholder1 <<- RTauholder1 + x[["RTau"]]
+      Rhholder1 <<- Rhholder1 + x[["Rh"]]
+      RDholder1 <<- RDholder1 + x[["RDh"]]})}
+
+  }
+
+
+    
+  #Do the same thing for channel C4
+  # mfdfa_data <- lapply(forced_data_indices, load_mfdfa_C4)
+  # if (length(mfdfa_data) > 0) {
+  #   # Assign results to the appropriate list based on forced_result
+  #   if (forced_result == 0) {
+  #     #Stores the total number of MFDFA trials that went into the dataframe
+  #     zeroresult <<- zeroresult+length(mfdfa_data)
+  #     sapply(mfdfa_data, function(x) {
+  #       qholder0 <<- qholder0 + x[["q"]]
+  #       Hqholder0 <<- Hqholder0 + x[["Hq"]]
+  #       Tauholder0 <<- Tauholder0 + x[["Tau"]]
+  #       hholder0 <<- hholder0 + x[["h"]]
+  #       Dholder0 <<- Dholder0 + x[["Dh"]]})
+  #       }
+  #   else {
+  #     oneresult <<- oneresult+length(mfdfa_data)
+  #     sapply(mfdfa_data, function(x) {
+  #       qholder1 <<- qholder1 + x[["q"]]
+  #       Hqholder1 <<- Hqholder1 + x[["Hq"]]
+  #       Tauholder1 <<- Tauholder1 + x[["Tau"]]
+  #       hholder1 <<- hholder1 + x[["h"]]
+  #       Dholder1 <<- Dholder1 + x[["Dh"]]})}
+  #   
+  #   }
+
+mfdfa_data_rest <- lapply(forced_data_indices, load_mfdfa_rest_C4)
+if (length(mfdfa_data_rest) > 0) {
+  # Assign results to the appropriate list based on forced_result
+  if (forced_result == 0) {
+    #Stores the total number of MFDFA trials that went into the dataframe
+    zeroresult_r <<- length(mfdfa_data_rest)
+    sapply(mfdfa_data_rest, function(x) {
+      Rqholder0 <<- Rqholder0 + x[["Rq"]]
+      RHqholder0 <<- RHqholder0 + x[["RHq"]]
+      RTauholder0 <<- RTauholder0 + x[["RTau"]]
+      Rhholder0 <<- Rhholder0 + x[["Rh"]]
+      RDholder0 <<- RDholder0 + x[["RDh"]]})}
+  else {
+    oneresult_r <<- length(mfdfa_data_rest)
+    sapply(mfdfa_data_rest, function(x) {
+      Rqholder1 <<- Rqholder1 + x[["Rq"]]
+      RHqholder1 <<- RHqholder1 + x[["RHq"]]
+      RTauholder1 <<- RTauholder1 + x[["RTau"]]
+      Rhholder1 <<- Rhholder1 + x[["Rh"]]
+      RDholder1 <<- RDholder1 + x[["RDh"]]})}
+
+}
+
+}
+
+# hholder0 <- hholder0 / zeroresult
+# Dholder0 <- Dholder0 / zeroresult
+# qholder0 <- qholder0 / zeroresult
+# Hqholder0 <- Hqholder0 / zeroresult
+# Tauholder0 <- Tauholder0 / zeroresult
+
+Rhholder0 <- Rhholder0 / zeroresult_r
+RDholder0 <- RDholder0 / zeroresult_r
+Rqholder0 <- Rqholder0 / zeroresult_r
+RHqholder0 <- RHqholder0 / zeroresult_r
+RTauholder0 <- RTauholder0 / zeroresult_r
+
+# hholder1 <-  hholder1 / oneresult
+# Dholder1 <-  Dholder1 / oneresult
+# qholder1 <-  qholder1 / oneresult
+# Hqholder1 <-  Hqholder1 / oneresult
+# Tauholder1 <-  Tauholder1 / oneresult
+
+Rhholder1 <-  Rhholder1 / oneresult_r
+RDholder1 <-  RDholder1 / oneresult_r
+Rqholder1 <-  Rqholder1 / oneresult_r
+RHqholder1 <-  RHqholder1 / oneresult_r
+RTauholder1 <-  RTauholder1 / oneresult_r
+
+
+
+Rhholder0 <- Rhholder0 / 2
+RDholder0 <- RDholder0 / 2
+Rqholder0 <- Rqholder0 / 2
+RHqholder0 <- RHqholder0 / 2
+RTauholder0 <- RTauholder0 / 2
+
+Rhholder1 <-  Rhholder1 / 2
+RDholder1 <-  RDholder1 / 2
+Rqholder1 <-  Rqholder1 / 2
+RHqholder1 <-  RHqholder1 / 2
+RTauholder1 <-  RTauholder1 / 2
+
+
+# save(hholder0, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\hholder0.Rdata")
+# save(Dholder0, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Dholder0.Rdata")
+# save(qholder0, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\qholder0.Rdata")
+# save(Hqholder0, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Hqholder0.Rdata")
+# save(Tauholder0, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Tauholder0.Rdata")
+
+save(Rhholder0, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Rhholder0.Rdata")
+save(RDholder0, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\RDholder0.Rdata")
+save(Rqholder0, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Rqholder0.Rdata")
+save(RHqholder0, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\RHqholder0.Rdata")
+save(RTauholder0, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\RTauholder0.Rdata")
+
+# save(hholder1, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\hholder1.Rdata")
+# save(Dholder1, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Dholder1.Rdata")
+# save(qholder1, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\qholder1.Rdata")
+# save(Hqholder1, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Hqholder1.Rdata")
+# save(Tauholder1, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Tauholder1.Rdata")
+
+save(Rhholder1, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Rhholder1.Rdata")
+save(RDholder1, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\RDholder1.Rdata")
+save(Rqholder1, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Rqholder1.Rdata")
+save(RHqholder1, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\RHqholder1.Rdata")
+save(RTauholder1, file= "E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\RTauholder1.Rdata")
+
+
+# Create data frames for each dataset
+#data0 <- data.frame(h = hholder0, Dh = Dholder0, q = qholder0, Hq = Hqholder0, Tau = Tauholder0 ,Rh = Rhholder0, RDh = RDholder0, Rq = Rqholder0, RHq = RHqholder0, RTau = RTauholder0 , Set = "0")
+#data1 <- data.frame(h = hholder1, Dh = Dholder1, q = qholder1, Hq = Hqholder1, Tau = Tauholder1 ,Rh = Rhholder1, RDh = RDholder1, Rq = Rqholder1, RHq = RHqholder1, RTau = RTauholder1 , Set = "1")
+
+```
+
+##Plotting MFDFA
+```{r}
+
+#load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Rqholder1.Rdata")
+Rdata0 <- data.frame(Hq = (RHqholder0), q = ( Rqholder0), Set = "Rest-unsuccesful")
+Rdata1 <- data.frame(Hq = (RHqholder1), q = ( Rqholder1), Set = "Rest-succesful")
+
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Hqholder0.Rdata")
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\qholder0.Rdata")
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Hqholder1.Rdata")
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\qholder1.Rdata")
+
+data0 <- data.frame(Hq = (Hqholder0), q = (qholder0), Set = "MI-unsuccesful")
+data1 <- data.frame(Hq = (Hqholder1), q = (qholder1), Set = "MI-succesful")
+
+
+DeltaHq0 <- max(Hqholder0) - min(Hqholder0)
+DeltaHq1 <- max(Hqholder1) - min(Hqholder1)
+
+DeltaRHq0 <- max(RHqholder0) - min(RHqholder0)
+DeltaRHq1 <- max(RHqholder1) - min(RHqholder1)
+
+
+cat("Delta Dh: unsuccsfulMI: ", DeltaHq0, "succsfulMI: " ,DeltaHq1,"unsuccsfulRest: ",DeltaRHq0, "succsfulRest: ", DeltaRHq1, "\n")
+
+
+q2MIUnSuccess <- 1.250835
+q2MISuccess <- 1.260374
+q2RestUnsucces <- 1.252762
+q2RestSuccess <- 1.266005
+
+delta_values <- data.frame(
+  Condition = c("MI-unsuccesful", "MI-succesful", "Rest-unsuccesful", "Rest-succesful"),
+  DeltaHq = c(DeltaHq0, DeltaHq1, DeltaRHq0, DeltaRHq1),
+  Deltaq = c(qholder0, qholder1, Rqholder0, Rqholder1),
+  q2s = c(q2MIUnSuccess,q2MISuccess,q2RestUnsucces,q2RestSuccess)
+  
+)
+
+legend_labels <- paste(delta_values$Condition, 
+                       "\nDelta Hq: ", round(delta_values$DeltaHq, 3),
+                       "\nHq on q = 2:", round(delta_values$q2s, 3))
+
+# Define the color mapping
+color_values <- c("MI-unsuccesful" = "darkblue", "MI-succesful" = "lightblue", 
+                  "Rest-unsuccesful" = "deeppink", "Rest-succesful" = "lightpink")
+
+
+data <- rbind(data0, data1, Rdata0, Rdata1)
+
+
+
+g <- ggplot(data, aes(x = q, y = Hq, color = Set)) +
+  geom_point(size = 2) +  # This adds the points to the plot with a uniform shape but adjusts size
+  scale_color_manual(values = c("MI-unsuccesful" = "darkblue", "MI-succesful" = "lightblue", 
+                                "Rest-unsuccesful" = "deeppink", "Rest-succesful" = "lightpink")) + # Assign shades of colors
+  labs(x = "Statistical moments (q)", y = "Generalized Hurst Exponents (H(q))") +
+  ggtitle("Generalized Hurst (Hq) over statistical moments (q)") +
+  theme_minimal() +
+  scale_color_manual(values = color_values, 
+                     labels = legend_labels,
+                     guide = guide_legend(title = "Condition and Delta Hq's")) +
+  scale_y_continuous(limits = c(1.05,1.75 ), breaks = seq(1.05,1.75, by = 0.05)) +
+  scale_x_continuous(limits = c(-5,15 ), breaks = seq(-5,15, by = 1)) +
+  geom_vline(xintercept = 2, linetype = "solid", color = "red", size = 1) +  # Vertical line at q=2
+  geom_hline(yintercept = q2MIUnSuccess, linetype = "solid", color = "darkblue", size = 0.7)+ 
+  geom_hline(yintercept = q2MISuccess, linetype = "solid", color = "lightblue", size = 0.7)+  #MISUCCES
+  geom_hline(yintercept = q2RestUnsucces, linetype = "solid", color = "deeppink", size = 0.7)+  # RestUnsucces
+  geom_hline(yintercept = q2RestSuccess, linetype = "solid", color = "lightpink", size = 0.7)  # RestSuccess
+  #geom_vline(xintercept = 2, linetype = "solid", color = "red", size = 1) +  # Vertical line at q=2
+  #geom_hline(yintercept = 1.330, linetype = "solid", color = "red", size = 1)  # Horizontal line, adjust yintercept to match your specific needs
+
+
+pdf("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Plots\\HqOverq.pdf", width = 10, height = 5)
+print(g)
+dev.off()
+
+# Print the plot
+print(g)
+ggsave("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Plots\\HqOverq.png", plot = g, width = 8, height = 4, dpi = 400)
+```
+
+##Plotting Multifractal Spectrum
+```{r}
+Rdata0 <- data.frame(h = (Rhholder0), Dh = ( RDholder0), Condition = "Rest-unsuccesful")
+Rdata1 <- data.frame(h = (Rhholder1), Dh = ( RDholder1), Condition = "Rest-succesful")
+
+
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\hholder0.Rdata")
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Dholder0.Rdata")
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\hholder1.Rdata")
+load("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\MFDFAPlots\\Dholder1.Rdata")
+
+data0 <- data.frame(h = (hholder0), Dh = (Dholder0), Condition = "MI-unsuccesful")
+data1 <- data.frame(h = (hholder1), Dh = (Dholder1), Condition = "MI-succesful")
+
+
+DeltaDh0 <- max(Dholder0) - min(Dholder0)
+DeltaDh1 <- max(Dholder1) - min(Dholder1)
+
+DeltaRDh0 <- max(RDholder0) - min(RDholder0)
+DeltaRDh1 <- max(RDholder1) - min(RDholder1)
+
+
+cat("Delta Dh: unsuccsfulMI: ", DeltaDh0, "succsfulMI: " ,DeltaDh1,"unsuccsfulRest: ",DeltaRDh0, "succsfulRest: ", DeltaRDh1, "\n")
+
+Deltah0 <- max(hholder0) - min(hholder0)
+Deltah1 <- max(hholder1) - min(hholder1)
+
+DeltaRh0 <- max(Rhholder0) - min(Rhholder0)
+DeltaRh1 <- max(Rhholder1) - min(Rhholder1)
+cat("Delta Dh: unsuccsfulMI: ", DeltaDh0, "succsfulMI: " ,DeltaDh1,"unsuccsfulRest: ",DeltaRDh0, "succsfulRest: ", DeltaRDh1, "\n")
+cat("Delta h: unsuccsfulMI: ", Deltah0, "succsfulMI: " ,Deltah1,"unsuccsfulRest: ",DeltaRh0, "succsfulRest: ", DeltaRh1, "\n")
+
+#difdata0 <- data.frame(h = (hholder0- Rhholder0), Dh = (Dholder0- RDholder0), Set = "dif-unsuccesful")
+#difdata1 <- data.frame(h = (hholder1 - Rhholder1), Dh = (Dholder1- Dholder1), Set = "dif-succesful")
+
+
+# Combine the data frames
+data <- rbind(data0, data1, Rdata0, Rdata1)
+colnames(data) <- c("h", "Dh", "Condition")
+# Calculate the central tendency for each set
+centralTendency <- data %>%
+  group_by(Condition) %>%
+  summarise(midpoint = (max(h) + min(h)) / 2)
+
+# Print the results
+print(centralTendency)
+
+# Base plot
+centralTendency$label_pos <- c(-1.5, -0.5, 1, 2)  # Adjust these values based on actual overlap seen in your plot
+
+# Define the color mapping
+color_values <- c("MI-unsuccesful" = "darkblue", "MI-succesful" = "lightblue", 
+                  "Rest-unsuccesful" = "deeppink", "Rest-succesful" = "lightpink")
+
+delta_values <- data.frame(
+  Condition = c("MI-unsuccesful", "MI-succesful", "Rest-unsuccesful", "Rest-succesful"),
+  DeltaDh = c(DeltaDh0, DeltaDh1, DeltaRDh0, DeltaRDh1),
+  Deltah = c(Deltah0, Deltah1, DeltaRh0, DeltaRh1)
+)
+
+# Create the legend labels with Delta values
+legend_labels <- paste(delta_values$Condition, 
+                       "\nDelta h: ", round(delta_values$Deltah, 3))
+
+# Define the color mapping
+color_values <- c("MI-unsuccesful" = "darkblue", "MI-succesful" = "lightblue", 
+                  "Rest-unsuccesful" = "deeppink", "Rest-succesful" = "lightpink")
+
+# Base plot
+p <- ggplot(data, aes(x = h, y = Dh, color = Condition)) +
+  geom_point(size = 2) +  # This adds the points to the plot
+  scale_color_manual(values = color_values, 
+                     labels = legend_labels,
+                     guide = guide_legend(title = "Condition and Delta h's")) +
+  labs(x = "Singularity strength (h)", y = "D(h)") +
+  ggtitle("Singularity Spectrum") +
+  theme_minimal() +
+  #scale_y_continuous(limits = c(-0.2, 1), breaks = seq(-0.2, 1, by = 0.1)) +
+  theme(legend.position = "right", legend.text = element_text(size = 8))
+
+# Print the updated plot
+print(p)
+ggsave("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Plots\\SingularitySpectrum.png", plot = p, width = 8, height = 4, dpi = 400)
+```
+
+
+
+
+##Plotting MFDFA widths
+```{r}
+AveragedOverTrials_Dataframe
+
+
+boxplot_LI_power <- ggplot(AveragedOverTrials_Dataframe, aes(x = cluster, y = mean_MFDFA, fill = cluster)) +
+  geom_boxplot(width=0.5) +
+  #stat_summary(fun=median, geom="point", shape=20, size=7, color="red", fill="red") +
+  #stat_summary(fun=median, geom="text", aes(label=round(..y.., 3)), vjust=2, hjust=-0.3, color="red") +
+  labs(title = "Distribution of Mean Power by Cluster", x = "Cluster", y = "LI - Power") +
+  theme_minimal()+
+  theme(
+    legend.position = "bottom",
+  ) +
+  theme(legend.position = "bottom")
+
+print(boxplot_LI_power)
+```
+##Plotting the LI's
+```{r}
+#Get the annotations from the statistical tests that were performed before
+significance_label <- ifelse(p_adjusted < 0.001, "p < 0.001", formatC(p_adjusted, format = "e", digits = 2))
+
+
+boxplot_LI_power <- ggplot(LI_combined, aes(x = cluster, y = LI, fill = cluster)) +
+  geom_boxplot(width=0.5) +
+  stat_summary(fun=median, geom="point", shape=20, size=7, color="red", fill="red") +
+  stat_summary(fun=median, geom="text", aes(label=round(..y.., 3)), vjust=2, hjust=-0.3, color="red") +
+  labs(title = "Distribution of Mean Power by Cluster", x = "Cluster", y = "LI - Power") +
+  theme_minimal()+
+  theme(
+    legend.position = "bottom",
+    text = element_text(size = 14),       # Adjust the base text size
+    axis.title.x = element_text(size = 16), # Adjust x-axis title text size
+    axis.title.y = element_text(size = 16), # Adjust y-axis title text size
+    axis.text.x = element_text(size = 14),  # Adjust x-axis text size
+    axis.text.y = element_text(size = 14),  # Adjust y-axis text size
+    plot.title = element_text(size = 18)    # Adjust plot title text size
+  ) +
+  theme(legend.position = "bottom")+
+  annotate("text", x = 1.5, y = max(LI_combined$LI, na.rm = TRUE) * 1.05, label = significance_label[1], color = "blue", size = 7, vjust = 1)
+
+
+
+
+
+boxplot_mean_MFDFA <- ggplot(LI_combined, aes(x = cluster, y = MFDFA_LI, fill = cluster)) +
+  geom_boxplot(width=0.5) +
+  stat_summary(fun=median, geom="point", shape=20, size=7, color="red", fill="red") +
+  stat_summary(fun=median, geom="text", aes(label=round(..y.., 3)), vjust=4, hjust=-0.3, color="red") +
+  labs(title = "Distribution of Mean MFDFA by Cluster", x = "Cluster", y = "LI - MFDFA") +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    text = element_text(size = 14),       # Adjust the base text size
+    axis.title.x = element_text(size = 16), # Adjust x-axis title text size
+    axis.title.y = element_text(size = 16), # Adjust y-axis title text size
+    axis.text.x = element_text(size = 14),  # Adjust x-axis text size
+    axis.text.y = element_text(size = 14),  # Adjust y-axis text size
+    plot.title = element_text(size = 18)    # Adjust plot title text size
+  ) +
+  annotate("text", x = 1.5, y = max(LI_combined$MFDFA_LI, na.rm = TRUE) * 1.05, label = significance_label[2], color = "blue", size = 7, vjust = 1)
+
+# Create boxplot for mean_MFDFA
+boxplot_mean_MFDFA_diff <- ggplot(LI_combined, aes(x = cluster, y = MFDFA_diff_LI, fill = cluster)) +
+  geom_boxplot(width=0.5) +
+    stat_summary(fun=median, geom="point", shape=20, size=7, color="red", fill="red") +
+  stat_summary(fun=median, geom="text", aes(label=round(..y.., 3)), vjust=4, hjust=-0.3, color="red") +
+  labs(title = "Distribution of Mean MFDFA_diff by Cluster", x = "Cluster", y = "LI - MFDFA_diff") +
+  theme_minimal()+
+  theme(
+    legend.position = "bottom",
+    text = element_text(size = 14),       # Adjust the base text size
+    axis.title.x = element_text(size = 16), # Adjust x-axis title text size
+    axis.title.y = element_text(size = 16), # Adjust y-axis title text size
+    axis.text.x = element_text(size = 14),  # Adjust x-axis text size
+    axis.text.y = element_text(size = 14),  # Adjust y-axis text size
+    plot.title = element_text(size = 18)    # Adjust plot title text size
+  ) +
+  theme(legend.position = "bottom")+
+  annotate("text", x = 1.5, y = max(LI_combined$MFDFA_diff_LI, na.rm = TRUE) * 1.05, label = significance_label[3], color = "blue", size = 7, vjust = 1)
+
+
+
+
+# Print the plots
+print(boxplot_LI_power)
+print(boxplot_mean_MFDFA)
+print(boxplot_mean_MFDFA_diff)
+
+ggsave("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Plots\\Boxplot_LI_Power.png", plot = boxplot_LI_power, width = 8, height = 8)
+
+ggsave("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Plots\\boxplot_mean_MFDFA.png", plot = boxplot_mean_MFDFA, width = 8, height = 8)
+
+ggsave("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Plots\\boxplot_mean_MFDFA_diff.png", plot = boxplot_mean_MFDFA_diff, width = 8, height = 8)
+
+
+#mean_power_high <- mean(LI_combined$LI[LI_combined$cluster == "high"])
+#mean_power_low <- mean(LI_combined$LI[LI_combined$cluster == "low"])
+
+```
+
+##Plotting DFA
+```{r}
+library(ggplot2)
+summarized_data <- dfa_results %>%
+  group_by(Session, cluster) %>%
+  summarise(
+    mean_DFA_alpha_ERD = mean(DFA_alpha_ERD),
+    sd_DFA_alpha_ERD = sd(DFA_alpha_ERD),
+    mean_DFA_alpha_MFDFA_Widths = mean(DFA_alpha_MFDFA_Widths),
+    sd_DFA_alpha_MFDFA_Widths = sd(DFA_alpha_MFDFA_Widths),
+    mean_DFA_alpha_MFDFA_Widths_diff = mean(DFA_alpha_MFDFA_Widths_diff),
+    sd_DFA_alpha_MFDFA_Widths_diff = sd(DFA_alpha_MFDFA_Widths_diff)
+  )
+
+# Define common limits and breaks
+x_limits <- c(1, 11)
+y_limits <- c(0.35, 0.7)
+y_breaks <- seq(0.35, 0.7, length.out = 8)
+x_breaks <- seq(1, 11, length.out = 11)
+
+
+plot_DFA_ERD <- ggplot(summarized_data, aes(x = Session, y = mean_DFA_alpha_ERD, color = cluster)) +
+  geom_line() +
+  geom_point() +
+  geom_errorbar(aes(ymin = mean_DFA_alpha_ERD - sd_DFA_alpha_ERD, ymax = mean_DFA_alpha_ERD + sd_DFA_alpha_ERD), width = 0.2) +
+  labs(title = "DFA alpha ERD by Session", y = "DFA alpha ERD", x = "Session") +
+  scale_x_continuous(limits = x_limits, breaks = x_breaks) +
+  scale_y_continuous(limits = y_limits, breaks = y_breaks) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    axis.title.x = element_text(size = 16),
+    axis.title.y = element_text(size = 16)
+  )
+
+plot_DFA_MFDFA_Widths <- ggplot(summarized_data, aes(x = Session, y = mean_DFA_alpha_MFDFA_Widths, color = cluster)) +
+  geom_line() +
+  geom_point() +
+  geom_errorbar(aes(ymin = mean_DFA_alpha_MFDFA_Widths - sd_DFA_alpha_MFDFA_Widths, ymax = mean_DFA_alpha_MFDFA_Widths + sd_DFA_alpha_MFDFA_Widths), width = 0.2) +
+  labs(title = "DFA alpha MFDFA Widths by Session", y = "DFA alpha MFDFA Widths", x = "Session") +
+  scale_x_continuous(limits = x_limits, breaks = x_breaks) +
+  scale_y_continuous(limits = y_limits, breaks = y_breaks) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    axis.title.x = element_text(size = 16),
+    axis.title.y = element_text(size = 16)
+  )
+
+plot_DFA_MFDFA_Widths_diff <- ggplot(summarized_data, aes(x = Session, y = mean_DFA_alpha_MFDFA_Widths_diff, color = cluster)) +
+  geom_line() +
+  geom_point() +
+  geom_errorbar(aes(ymin = mean_DFA_alpha_MFDFA_Widths_diff - sd_DFA_alpha_MFDFA_Widths_diff, ymax = mean_DFA_alpha_MFDFA_Widths_diff + sd_DFA_alpha_MFDFA_Widths_diff), width = 0.2) +
+  labs(title = "DFA alpha MFDFA Widths Diff by Session", y = "DFA alpha MFDFA Widths Diff", x = "Session") +
+  scale_x_continuous(limits = x_limits, breaks = x_breaks) +
+  scale_y_continuous(limits = y_limits, breaks = y_breaks) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    axis.title.x = element_text(size = 16),
+    legend.position = "bottom",  # Position the legend below the plot
+    axis.title.y = element_text(size = 16)
+  )
+
+# Save the plots with the specified size
+ggsave("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Plots\\plot_DFA_ERD.png", plot = plot_DFA_ERD, width = 8, height = 8, dpi = 600)
+ggsave("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Plots\\plot_DFA_MFDFA_Widths.png", plot = plot_DFA_MFDFA_Widths, width = 8, height = 8, dpi = 600)
+ggsave("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Plots\\plot_DFA_MFDFA_Widths_diff.png", plot = plot_DFA_MFDFA_Widths_diff, width = 8, height = 8, dpi = 600)
+
+```
+
+##Plotting ACF
+```{r}
+#average_acf_data_MFDFA_Widths_diff
+# Filter out Lag 0
+average_acf_data <- average_acf_data %>%
+    filter(Lag > 0)
+
+average_acf_data_MFDFA_Widths <- average_acf_data_MFDFA_Widths %>%
+    filter(Lag > 0)
+
+average_acf_data_MFDFA_Widths_diff <- average_acf_data_MFDFA_Widths_diff %>%
+    filter(Lag > 0)
+
+# Calculate the confidence bounds for significance
+confidence_limit <- 2 / sqrt(134554 )
+
+
+
+
+average_acf_data$Session_fact <- factor(average_acf_data$Session, levels = 1:11)
+average_acf_data_MFDFA_Widths$Session_fact <- factor(average_acf_data_MFDFA_Widths$Session, levels = 1:11)
+average_acf_data_MFDFA_Widths_diff$Session_fact <- factor(average_acf_data_MFDFA_Widths_diff$Session, levels = 1:11)
+
+# Plot the average ACF results using ggplot2
+Plot_ERD_ACF <- ggplot(average_acf_data, aes(x = Lag, y = mean_acf, color = as.factor(Session_fact))) +
+    geom_line() +
+    geom_hline(yintercept = confidence_limit, linetype = "dashed", color = "red") +
+    geom_hline(yintercept = -confidence_limit, linetype = "dashed", color = "red") +
+    labs(title = "Average Autocorrelation Function for ERD across Sessions and Participants",
+         x = "Lag", y = "Average ACF Value",
+         color = "Session") +
+    theme_minimal() +
+    scale_x_continuous(breaks = pretty(average_acf_data$Lag, n = 20))
+
+Plot_MFDFA_ACF <- ggplot(average_acf_data_MFDFA_Widths, aes(x = Lag, y = mean_acf, color = as.factor(Session_fact))) +
+    geom_line() +
+    geom_hline(yintercept = confidence_limit, linetype = "dashed", color = "red") +
+    geom_hline(yintercept = -confidence_limit, linetype = "dashed", color = "red") +
+    labs(title = "Average Autocorrelation Function for MFDFA Widths across Sessions and Participants",
+         x = "Lag", y = "Average ACF Value",
+         color = "Session") +
+    theme_minimal() +
+    scale_x_continuous(breaks = pretty(average_acf_data_MFDFA_Widths$Lag, n = 20))
+
+Plot_MFDFA_Diff_ACF <- ggplot(average_acf_data_MFDFA_Widths_diff, aes(x = Lag, y = mean_acf, color = as.factor(Session_fact))) +
+    geom_line() +
+    geom_hline(yintercept = confidence_limit, linetype = "dashed", color = "red") +
+    geom_hline(yintercept = -confidence_limit, linetype = "dashed", color = "red") +
+    labs(title = "Average Autocorrelation Function for MFDFA_Widths_Diff across Sessions and Participants",
+         x = "Lag", y = "Average ACF Value",
+         color = "Session") +
+    theme_minimal() +
+    theme(
+      legend.position = "bottom",
+    ) +
+    scale_y_continuous(breaks =  pretty(average_acf_data_MFDFA_Widths_diff$mean_acf, n = 5))+
+    scale_x_continuous(breaks = pretty(average_acf_data_MFDFA_Widths_diff$Lag, n = 20))
+
+Plot_MFDFA_Diff_ACF
+
+ggsave("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Plots\\Plot_ERD_ACF.png", plot = Plot_ERD_ACF, width = 8, height = 8, dpi = 600)
+ggsave("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Plots\\Plot_MFDFA_ACF.png", plot = Plot_MFDFA_ACF, width = 8, height = 8, dpi = 600)
+ggsave("E:\\MonsterDataset\\REBOOTPreprocessedData\\FullSpectrum2\\Plots\\Plot_MFDFA_Diff_ACF.png", plot = Plot_MFDFA_Diff_ACF, width = 8, height = 8, dpi = 600)
+
+
+```
+
+#Mixed Linear-effects Models
+##Session analysis
+```{r}
+#Makes sure to have 1 metric per session (So also averaging over Channels and target)
+LMMDataframeAveragedSessions <- AveragedOverTrials_Dataframe %>%
+  group_by(Subject, Session) %>%
+  summarise(
+    mean_accuracy_Sessions = mean(accuracy, na.rm = TRUE),
+    mean_ERD_Sessions = mean(log(mean_ERD), na.rm = TRUE),
+    mean_MFDFA_Sessions = mean(mean_MFDFA, na.rm = TRUE),
+    mean_MFDFA_diff_Sessions = mean(mean_MFDFA_Widths_diff, na.rm = TRUE),
+    )
+
+#Create function to summarize the findings of the models
+summarize_model_with_p <- function(model) {
+  params <- model_parameters(model, standardize = "basic")
+  summary_params <- summary(model)$coefficients
+  data.frame(
+    Effect = rownames(summary_params),
+    Estimate = summary_params[, "Estimate"],
+    Std_Error = summary_params[, "Std. Error"],
+    p_value = summary_params[, "Pr(>|t|)"],
+    Standardized_Coefficient = params$Std_Coefficient
+  )
+}
+
+#Formula 4:
+ERD_Session_Model <- lmer(mean_ERD_Sessions ~ Session + (1 | Subject), data = LMMDataframeAveragedSessions)
+summary_ERD_Session_Model <- summarize_model_with_p(ERD_Session_Model)
+
+#Formula 5:
+MFDFA_Width_Session_Model <- lmer(mean_MFDFA_Sessions ~ Session + (1 | Subject), data = LMMDataframeAveragedSessions)
+summary_MFDFA_Width_Session_Model <- summarize_model_with_p(MFDFA_Width_Session_Model)
+
+#Formula 6:
+MFDFA_Width_Diff_Session_Model <- lmer(mean_MFDFA_diff_Sessions ~ Session + (1 | Subject), data = LMMDataframeAveragedSessions)
+summary_MFDFA_Width_Diff_Session_Model <- summarize_model_with_p(MFDFA_Width_Diff_Session_Model)
+
+#Formula 7:
+LI_Session_Model <- lmer(LI ~ Session + (1 | Subject), data = LI_combined)
+summary_LI_Session_Model <- summarize_model_with_p(LI_Session_Model)
+
+#Formula 8:
+LI_MFDFA_Session_Model <- lmer(MFDFA_LI ~ Session + (1 | Subject), data = LI_combined)
+summary_LI_MFDFA_Session_Model <- summarize_model_with_p(LI_MFDFA_Session_Model)
+
+#Formula 9:
+Accuracy_Session_Model <- lmer(mean_accuracy_Sessions ~ Session + (1 | Subject), data = LMMDataframeAveragedSessions)
+summary_Accuracy_Session_Model <- summarize_model_with_p(Accuracy_Session_Model)
+
+Results_LMM_Sessions <- bind_rows(
+  summary_ERD_Session_Model %>% mutate(Metric = "ERD_avg"),
+  summary_MFDFA_Width_Session_Model %>% mutate(Metric = "mfdfa_avg"),
+  summary_MFDFA_Width_Diff_Session_Model %>% mutate(Metric = "mfdfa_dif_avg"),
+  summary_LI_Session_Model %>% mutate(Metric = "LI_Power"),
+  summary_LI_MFDFA_Session_Model %>% mutate(Metric = "LI_MFDFA_Width"),
+  summary_Accuracy_Session_Model %>% mutate(Metric = "Accuracy")
+) %>%
+  filter(Effect == "Session")
+
+# Print the updated results table
+print(Results_LMM_Sessions)
+```
+
+
+```{r}
+library(MuMIn)
+
+summarize_model_with_p <- function(model) {
+  summary_model <- summary(model)
+  fixed_effects <- tidy(model, effects = "fixed", conf.int = TRUE)
+  random_effects <- tidy(model, effects = "ran_pars", conf.int = TRUE)
+  aic_value <- AIC(model)
+  bic_value <- BIC(model)
+  log_likelihood <- logLik(model)
+  
+  # Calculate R² values
+  r_squared <- r.squaredGLMM(model)
+  
+  list(fixed = fixed_effects, random = random_effects, aic = aic_value, bic = bic_value, logLik = log_likelihood, r_squared = r_squared)
+}
+```
+
+###Formula 4:
+```{r}
+ERD_Session_Model <- lmer(ERD_Log ~ Session + (1 | Subject), data = ERD_data)
+```
+
+###Formula 5:
+```{r}
+MFDFA_Width_Session_Model <- lmer(MFDFA_Widths ~ Session + (1 | Subject), data = ERD_data)
+```
+
+###Formula 6:
+```{r}
+MFDFA_Width_Diff_Session_Model <- lmer(MFDFA_Widths_diff ~ Session + (1 | Subject), data = ERD_data)
+```
+
+###Formula 7:
+```{r}
+LI_Session_Model <- lmer(LI ~ Session + (1 | Subject), data = LI_combined)
+```
+
+###Formula 8:
+```{r}
+LI_MFDFA_Session_Model <- lmer(MFDFA_LI ~ Session + (1 | Subject), data = LI_combined)
+```
+
+###Formula 9:
+```{r}
+Accuracy_Session_Model <- lmer(mean_accuracy_Sessions ~ Session + (1 | Subject), data = LMMDataframeAveragedSessions)
+```
+
+
+```{r}
+library(dplyr)
+library(tibble)
+library(purrr)
+
+combine_summaries <- function(summaries, model_names) {
+  bind_rows(
+    lapply(seq_along(summaries), function(i) {
+      summaries[[i]]$fixed %>%
+        dplyr::select(term, estimate, std.error, statistic, p.value, conf.low, conf.high) %>%
+        mutate(model = model_names[i]) %>%
+        dplyr::select(model, everything())
+    })
+  )
+}
+
+#ERD is log transformed, so it needs to be transformed back
+back_transform_erd <- function(log_estimate, log_conf_low, log_conf_high, log_std_error, min_ERD) {
+  estimate <- exp(log_estimate) - abs(min_ERD) - 0.001
+  conf_low <- exp(log_conf_low) - abs(min_ERD) - 0.001
+  conf_high <- exp(log_conf_high) - abs(min_ERD) - 0.001
+  std_error <- exp(log_std_error)- abs(min_ERD) - 0.001
+  return(list(estimate = estimate, conf_low = conf_low, conf_high = conf_high, std_error = std_error))
+}
+min_ERD <- min(ERD_data$ERD)
+
+
+# Example model summaries (assuming summarize_model_with_p is already defined)
+summary_ERD_Session_Model <- summarize_model_with_p(ERD_Session_Model)
+summary_MFDFA_Width_Session_Model <- summarize_model_with_p(MFDFA_Width_Session_Model)
+summary_MFDFA_Width_Diff_Session_Model <- summarize_model_with_p(MFDFA_Width_Diff_Session_Model)
+summary_LI_Session_Model <- summarize_model_with_p(LI_Session_Model)
+summary_LI_MFDFA_Session_Model <- summarize_model_with_p(LI_MFDFA_Session_Model)
+summary_Accuracy_Session_Model <- summarize_model_with_p(Accuracy_Session_Model)
+
+summary_ERD_Session_Model <- summarize_model_with_p(ERD_Session_Model)
+summary_ERD_Session_Model$fixed <- summary_ERD_Session_Model$fixed %>%
+  mutate(
+    transformed = purrr::pmap(list(estimate, conf.low, conf.high, std.error), ~ back_transform_erd(..1, ..2, ..3, ..4, min_ERD)),
+    estimate = map_dbl(transformed, "estimate"),
+    conf.low = map_dbl(transformed, "conf_low"),
+    conf.high = map_dbl(transformed, "conf_high"),
+    std.error = map_dbl(transformed, "std_error")
+  ) %>%
+  dplyr::select(-transformed)
+
+model_summaries <- list(
+  summary_ERD_Session_Model,
+  summary_MFDFA_Width_Session_Model,
+  summary_MFDFA_Width_Diff_Session_Model,
+  summary_LI_Session_Model,
+  summary_LI_MFDFA_Session_Model,
+  summary_Accuracy_Session_Model
+)
+
+
+model_names <- c(
+  "ERD - Session",
+  "MFDFA\textsubscript{Widths} - Session",
+  "MFDFA\textsubscript{Width-Diff} - Session",
+  "LI - Session",
+  "LI MFDFA - Session",
+  "Accuracy - Session"
+)
+
+dense_table <- combine_summaries(model_summaries, model_names) %>%
+  as_tibble()
+
+
+# Print the table
+print(dense_table)
+
+```
+
+```{r}
+library(broom)
+library(MuMIn)
+
+summarize_model_with_p <- function(model) {
+  summary_model <- summary(model)
+  fixed_effects <- tidy(model, effects = "fixed", conf.int = TRUE)
+  random_effects <- tidy(model, effects = "ran_pars", conf.int = TRUE)
+  aic_value <- AIC(model)
+  bic_value <- BIC(model)
+  log_likelihood <- logLik(model)
+  
+  # Calculate R² values
+  r_squared <- r.squaredGLMM(model)
+  
+  list(fixed = fixed_effects, random = random_effects, aic = aic_value, bic = bic_value, logLik = log_likelihood, r_squared = r_squared)
+}
+
+combine_summaries <- function(summaries, model_names) {
+  bind_rows(
+    lapply(seq_along(summaries), function(i) {
+      summaries[[i]]$fixed %>%
+        dplyr::select(term, estimate, std.error, statistic, p.value, conf.low, conf.high) %>%
+        mutate(model = model_names[i], r_squared = summaries[[i]]$r_squared[1, "R2c"]) %>%
+        dplyr::select(model, r_squared, everything())
+    })
+  )
+}
+
+# ERD is log transformed, so it needs to be transformed back
+back_transform_erd <- function(log_estimate, log_conf_low, log_conf_high, log_std_error, min_ERD) {
+  estimate <- exp(log_estimate) - abs(min_ERD) - 0.001
+  conf_low <- exp(log_conf_low) - abs(min_ERD) - 0.001
+  conf_high <- exp(log_conf_high) - abs(min_ERD) - 0.001
+  std_error <- exp(log_std_error) - abs(min_ERD) - 0.001
+  return(list(estimate = estimate, conf_low = conf_low, conf_high = conf_high, std_error = std_error))
+}
+
+# Assume min_ERD is defined elsewhere in your code
+min_ERD <- min(ERD_data$ERD)
+
+# Example model summaries
+summary_ERD_Session_Model <- summarize_model_with_p(ERD_Session_Model)
+summary_MFDFA_Width_Session_Model <- summarize_model_with_p(MFDFA_Width_Session_Model)
+summary_MFDFA_Width_Diff_Session_Model <- summarize_model_with_p(MFDFA_Width_Diff_Session_Model)
+summary_LI_Session_Model <- summarize_model_with_p(LI_Session_Model)
+summary_LI_MFDFA_Session_Model <- summarize_model_with_p(LI_MFDFA_Session_Model)
+summary_Accuracy_Session_Model <- summarize_model_with_p(Accuracy_Session_Model)
+
+# Back-transform the ERD estimates
+summary_ERD_Session_Model$fixed <- summary_ERD_Session_Model$fixed %>%
+  mutate(
+    transformed = purrr::pmap(list(estimate, conf.low, conf.high, std.error), ~ back_transform_erd(..1, ..2, ..3, ..4, min_ERD)),
+    estimate = map_dbl(transformed, "estimate"),
+    conf.low = map_dbl(transformed, "conf_low"),
+    conf.high = map_dbl(transformed, "conf_high"),
+    std.error = map_dbl(transformed, "std_error")
+  ) %>%
+  dplyr::select(-transformed)
+
+model_summaries <- list(
+  summary_ERD_Session_Model,
+  summary_MFDFA_Width_Session_Model,
+  summary_MFDFA_Width_Diff_Session_Model,
+  summary_LI_Session_Model,
+  summary_LI_MFDFA_Session_Model,
+  summary_Accuracy_Session_Model
+)
+
+model_names <- c(
+  "ERD - Session",
+  "MFDFA Widths - Session",
+  "MFDFA Width-Diff - Session",
+  "LI - Session",
+  "LI MFDFA - Session",
+  "Accuracy - Session"
+)
+
+dense_table <- combine_summaries(model_summaries, model_names) %>%
+  as_tibble()
+
+# Print the table
+print(dense_table)
+
+```
+
+
+
+
+
+
+
+
+
+
+##Trial analysis
+```{r}
+library(performance)
+library(broom.mixed)
+library(dplyr)
+library(tidyr)
+
+summarize_model_with_p <- function(model) {
+  summary_model <- summary(model)
+  fixed_effects <- tidy(model, effects = "fixed", conf.int = TRUE)
+  random_effects <- tidy(model, effects = "ran_pars", conf.int = TRUE)
+  aic_value <- AIC(model)
+  bic_value <- BIC(model)
+  log_likelihood <- logLik(model)
+  
+  list(fixed = fixed_effects, random = random_effects, aic = aic_value, bic = bic_value, logLik = log_likelihood)
+}
+
+```
+###Formula 10:
+```{r}
+ERD_Trial_Model <- lmer(ERD_Log ~ Trial + (1 | Subject), data = ERD_data)
+```
+###Formula 11:
+```{r}
+MFDFA_Widths_Trial_Model <- lmer(MFDFA_Widths ~ Trial + (1 | Subject), data = ERD_data)
+```
+###Formula 12:
+```{r}
+MFDFA_Widths_diff_Trial_Model <- lmer(MFDFA_Widths_diff ~ Trial + (1 | Subject), data = ERD_data)
+```
+###Formula 13:
+```{r}
+MFDFA_Widths_rest_Trial_Model <- lmer(MFDFA_Widths_rest ~ Trial + (1 | Subject), data = ERD_data)
+```
+
+
+```{r}
+
+
+
+# Summarize the models
+summary_ERD_Trial_Model <- summarize_model_with_p(ERD_Trial_Model)
+summary_MFDFA_Widths_Trial_Model <- summarize_model_with_p(MFDFA_Widths_Trial_Model)
+summary_MFDFA_Widths_diff_Trial_Model <- summarize_model_with_p(MFDFA_Widths_diff_Trial_Model)
+summary_MFDFA_Widths_rest_Trial_Model <- summarize_model_with_p(MFDFA_Widths_rest_Trial_Model)
+
+summary_ERD_Trial_Model <- summarize_model_with_p(ERD_Trial_Model)
+summary_ERD_Trial_Model$fixed <- summary_ERD_Trial_Model$fixed %>%
+  mutate(
+    transformed = purrr::pmap(list(estimate, conf.low, conf.high, std.error), ~ back_transform_erd(..1, ..2, ..3, ..4, min_ERD)),
+    estimate = map_dbl(transformed, "estimate"),
+    conf.low = map_dbl(transformed, "conf_low"),
+    conf.high = map_dbl(transformed, "conf_high"),
+    std.error = map_dbl(transformed, "std_error")
+  ) %>%
+  dplyr::select(-transformed)
+
+# List of model summaries
+trial_model_summaries <- list(
+  summary_ERD_Trial_Model,
+  summary_MFDFA_Widths_Trial_Model,
+  summary_MFDFA_Widths_diff_Trial_Model,
+  summary_MFDFA_Widths_rest_Trial_Model
+)
+
+model_names = c("ERD - Trials",  "MFDFA\textsubscript{Widths} - Trials", "MFDFA\textsubscript{Widths-Diff} - Trials", "MFDFA\textsubscript{Widths-Rest} - Trials")
+
+
+dense_table_trial <- combine_summaries(trial_model_summaries, model_names) %>%
+  as_tibble()
+
+
+# Display the table
+print(dense_table_trial)
+
+
+```
+
+```{r}
+library(dplyr)
+library(purrr)
+library(tibble)
+library(broom)
+library(MuMIn)
+
+summarize_model_with_p <- function(model) {
+  summary_model <- summary(model)
+  fixed_effects <- tidy(model, effects = "fixed", conf.int = TRUE)
+  random_effects <- tidy(model, effects = "ran_pars", conf.int = TRUE)
+  aic_value <- AIC(model)
+  bic_value <- BIC(model)
+  log_likelihood <- logLik(model)
+  
+  # Calculate R² values
+  r_squared <- r.squaredGLMM(model)
+  
+  list(fixed = fixed_effects, random = random_effects, aic = aic_value, bic = bic_value, logLik = log_likelihood, r_squared = r_squared)
+}
+
+combine_summaries <- function(summaries, model_names) {
+  bind_rows(
+    lapply(seq_along(summaries), function(i) {
+      summaries[[i]]$fixed %>%
+        dplyr::select(term, estimate, std.error, statistic, p.value, conf.low, conf.high) %>%
+        mutate(model = model_names[i], r_squared = summaries[[i]]$r_squared[1, "R2c"]) %>%
+        dplyr::select(model, r_squared, everything())
+    })
+  )
+}
+
+# ERD is log transformed, so it needs to be transformed back
+back_transform_erd <- function(log_estimate, log_conf_low, log_conf_high, log_std_error, min_ERD) {
+  estimate <- exp(log_estimate) - abs(min_ERD) - 0.001
+  conf_low <- exp(log_conf_low) - abs(min_ERD) - 0.001
+  conf_high <- exp(log_conf_high) - abs(min_ERD) - 0.001
+  std_error <- exp(log_std_error) - abs(min_ERD) - 0.001
+  return(list(estimate = estimate, conf_low = conf_low, conf_high = conf_high, std_error = std_error))
+}
+
+# Assume min_ERD is defined elsewhere in your code
+min_ERD <- min(ERD_data$ERD)
+
+# Summarize the models
+summary_ERD_Trial_Model <- summarize_model_with_p(ERD_Trial_Model)
+summary_MFDFA_Widths_Trial_Model <- summarize_model_with_p(MFDFA_Widths_Trial_Model)
+summary_MFDFA_Widths_diff_Trial_Model <- summarize_model_with_p(MFDFA_Widths_diff_Trial_Model)
+summary_MFDFA_Widths_rest_Trial_Model <- summarize_model_with_p(MFDFA_Widths_rest_Trial_Model)
+
+# Back-transform the ERD estimates
+summary_ERD_Trial_Model$fixed <- summary_ERD_Trial_Model$fixed %>%
+  mutate(
+    transformed = purrr::pmap(list(estimate, conf.low, conf.high, std.error), ~ back_transform_erd(..1, ..2, ..3, ..4, min_ERD)),
+    estimate = map_dbl(transformed, "estimate"),
+    conf.low = map_dbl(transformed, "conf_low"),
+    conf.high = map_dbl(transformed, "conf_high"),
+    std.error = map_dbl(transformed, "std_error")
+  ) %>%
+  dplyr::select(-transformed)
+
+# List of model summaries
+trial_model_summaries <- list(
+  summary_ERD_Trial_Model,
+  summary_MFDFA_Widths_Trial_Model,
+  summary_MFDFA_Widths_diff_Trial_Model,
+  summary_MFDFA_Widths_rest_Trial_Model
+)
+
+model_names <- c("ERD - Trials", "MFDFA Widths - Trials", "MFDFA Widths-Diff - Trials", "MFDFA Widths-Rest - Trials")
+
+dense_table_trial <- combine_summaries(trial_model_summaries, model_names) %>%
+  as_tibble()
+
+# Display the table
+print(dense_table_trial)
+
+
+```
+
+
+```{r}
+# Load necessary libraries
+library(lme4)
+library(ggplot2)
+
+# Ensure the response variable is strictly positive
+min_ERD <- min(ERD_data$ERD, na.rm = TRUE)
+constant <- ifelse(min_ERD <= 0, abs(min_ERD) + 1, 0.0001) # Add a small constant if min_ERD is non-positive
+
+# Add the constant to the ERD values
+ERD_data$ERD_Log <- log(ERD_data$ERD + abs(min_ERD) +0.001)
+
+
+# Check for any remaining NaNs
+sum(is.na(ERD_data$ERD_Log))  # Should be 0 if handled correctly
+
+# Fit a linear mixed model with the log transformed response variable
+model_log <- lmer(ERD_Log ~ Trial + (1|Subject), data = ERD_data)
+
+# Extract residuals from the log transformed model
+residuals_log <- resid(model_log)
+
+# Q-Q plot for residuals of the log transformed model
+qqnorm(residuals_log)
+qqline(residuals_log, col = "red")
+
+# Histogram of residuals of the log transformed model
+hist(residuals_log, main = "Histogram of Residuals (Log Transformed)", xlab = "Residuals")
+
+
+
+```
+
+
+
+
+
+
+
+```{r}
+threshold <- quantile(ERD_data$ERD, 0.95)
+ERD_data_clipped <- ERD_data[ERD_data$ERD <= threshold, ]
+
+ERD_data_long <- pivot_longer(ERD_data, c(ERD, MFDFA_Widths, MFDFA_Widths_rest, MFDFA_Widths_diff))
+
+ggplot(ERD_data_clipped, aes(x = ERD)) +
+  geom_histogram(binwidth = 500, fill = "blue", color = "black", alpha = 0.7) +
+  labs(title = "Histogram of ERD Data", x = "ERD", y = "Frequency") +
+  theme_minimal()
+
+ggplot(ERD_data, aes(x = MFDFA_Widths_rest)) +
+  geom_histogram(binwidth = 0.05, fill = "blue", color = "black", alpha = 0.7) +
+  labs(title = "Histogram of ERD Data", x = "ERD", y = "Frequency") +
+  theme_minimal()
+
+
+ggplot(ERD_data, aes(x = MFDFA_Widths_diff)) +
+  geom_histogram(binwidth = 0.05, fill = "blue", color = "black", alpha = 0.7) +
+  labs(title = "Histogram of ERD Data", x = "ERD", y = "Frequency") +
+  theme_minimal()
+
+
+
+
+
+
+
+
+
+ggplot(ERD_data_long, aes(x = value, fill = factor(forcedresult, levels = c("0", "1") , labels = c("incorrect", "correct")   ))) +
+  geom_histogram( color = "black", alpha = 0.7, position = "identity") +
+  labs(title = "Histogram of ERD Data by forcedresult", x = "ERD", y = "Frequency", fill = "Forced Result") +
+  theme_minimal() +
+  facet_wrap(~name, scales = "free")
+```
+
+```{r}
+LI_combined_long <- pivot_longer(LI_combined, c(LI, MFDFA_LI, MFDFA_diff_LI))
+
+ggplot(LI_combined_long, aes(x = value, fill = factor(cluster))) +
+  geom_histogram(binwidth = 0.05, color = "black", alpha = 0.7, position = "identity") +
+  labs(title = "Histogram of ERD Data by forcedresult", x = "ERD", y = "Frequency", fill = "Forced Result") +
+  theme_minimal() +
+  facet_wrap(~name, scales = "free")+
+  
+
+
+```
+
+
+
+
+
